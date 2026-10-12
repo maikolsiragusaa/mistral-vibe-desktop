@@ -5,6 +5,7 @@ import {
   mkdtemp,
   mkdir,
   readFile,
+  realpath,
   rm,
   symlink,
   writeFile,
@@ -267,19 +268,31 @@ test("worktree listing is read-only and includes linked worktrees", async (t) =>
   const result = await service.worktrees({ projectPath });
   assert.equal(result.isGitRepository, true);
   assert.equal(result.items.length, 2);
-  assert.ok(
-    result.items.some(
-      // Git may canonicalize drive-letter casing on Windows. Compare path
-      // identity with the platform's rules rather than its display spelling.
-      (item) =>
-        path.relative(projectPath, item.path) === "" && item.branch === "main",
-    ),
+  const canonicalProject = await realpath(projectPath);
+  const canonicalLinked = await realpath(linkedPath);
+  const canonicalItems = await Promise.all(
+    result.items.map(async (item) => ({
+      ...item,
+      path: await realpath(item.path),
+    })),
   );
   assert.ok(
-    result.items.some(
+    canonicalItems.some(
+      // Git can expand Windows short names and junctions in the runner's TEMP
+      // directory. Compare canonical identity using the platform's path rules.
       (item) =>
-        path.relative(linkedPath, item.path) === "" && item.branch === "linked",
+        path.relative(canonicalProject, item.path) === "" &&
+        item.branch === "main",
     ),
+    JSON.stringify({ canonicalProject, canonicalItems }),
+  );
+  assert.ok(
+    canonicalItems.some(
+      (item) =>
+        path.relative(canonicalLinked, item.path) === "" &&
+        item.branch === "linked",
+    ),
+    JSON.stringify({ canonicalLinked, canonicalItems }),
   );
   assert.equal(result.truncated, false);
   assert.equal(

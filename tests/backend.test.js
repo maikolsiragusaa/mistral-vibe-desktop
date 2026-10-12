@@ -16,7 +16,7 @@ const repoRoot = path.resolve(
 );
 
 async function createBackend(t, options = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "vibe-desktop-test-"));
+  const root = await createTempRoot("vibe-desktop-test-");
   const userData = path.join(root, "user-data");
   await fs.mkdir(userData);
   const selectedProject = path.join(root, "project");
@@ -106,10 +106,56 @@ test("project picker is the only way to add a recent project to preferences", as
   assert.deepEqual(await backend.readPreferences(), saved);
 });
 
-test("connect serializes concurrent handshakes and creates a new user-data directory before spawn", async (t) => {
-  const root = await fs.mkdtemp(
-    path.join(os.tmpdir(), "vibe-desktop-connect-test-"),
+test("project picker canonicalizes a directory junction before session authorization", async (t) => {
+  let pickedPath;
+  const servers = [];
+  const { backend, root, selectedProject } = await createBackend(t, {
+    dialog: {
+      showOpenDialog: async () => ({
+        canceled: false,
+        filePaths: [pickedPath],
+      }),
+    },
+    spawnProcess: () => {
+      const server = new FakeAppServer();
+      servers.push(server);
+      return server;
+    },
+  });
+  const junction = path.join(root, "project-alias");
+  try {
+    await fs.symlink(selectedProject, junction, "junction");
+  } catch (error) {
+    if (["EACCES", "EPERM", "ENOTSUP", "UNKNOWN"].includes(error?.code)) {
+      t.skip(`Directory junctions are unavailable (${error.code})`);
+      return;
+    }
+    throw error;
+  }
+  pickedPath = junction;
+
+  assert.notEqual(junction, selectedProject);
+  assert.equal(await fs.realpath(junction), selectedProject);
+  const chosenProject = await backend.chooseProject();
+  assert.equal(chosenProject, selectedProject);
+
+  await backend.request("session/start", {
+    agentConfig: { cwd: chosenProject },
+  });
+  const startRequest = servers[0].requests.find(
+    (request) => request.method === "session/start",
   );
+  assert.equal(startRequest.params.agentConfig.cwd, selectedProject);
+  await assert.rejects(
+    backend.request("session/start", {
+      agentConfig: { cwd: junction },
+    }),
+    /Project path must be an existing selected folder/,
+  );
+});
+
+test("connect serializes concurrent handshakes and creates a new user-data directory before spawn", async (t) => {
+  const root = await createTempRoot("vibe-desktop-connect-test-");
   const userData = path.join(root, "not-created-yet");
   const childProcesses = [];
   const app = {
@@ -406,7 +452,7 @@ test(
       return;
     }
 
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "vibe-desktop-e2e-"));
+    const root = await createTempRoot("vibe-desktop-e2e-");
     const userData = path.join(root, "app-data");
     const vibeHome = path.join(root, "vibe-home");
     const workspace = path.join(root, "workspace");
@@ -699,9 +745,7 @@ test(
       return;
     }
 
-    const root = await fs.mkdtemp(
-      path.join(os.tmpdir(), "vibe-desktop-tool-e2e-"),
-    );
+    const root = await createTempRoot("vibe-desktop-tool-e2e-");
     const userData = path.join(root, "app-data");
     const vibeHome = path.join(root, "vibe-home");
     const workspace = path.join(root, "workspace");
@@ -933,6 +977,11 @@ async function exists(filePath) {
   } catch {
     return false;
   }
+}
+
+async function createTempRoot(prefix) {
+  const tempPath = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  return fs.realpath(tempPath);
 }
 
 async function deliverCallback(backend, server, callbackId, sessionId, kind) {

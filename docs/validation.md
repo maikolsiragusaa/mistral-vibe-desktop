@@ -31,7 +31,7 @@ are missing.
 ## Checks
 
 `npm run build` passed TypeScript and production bundling. `npm test` passed all
-21 transport, renderer and backend tests, with no skipped tests. The real
+22 transport, renderer and backend tests, with no skipped tests. The real
 Electron integration test passed against both the installed and final frozen
 backend (24.1 seconds for the frozen run). `npm audit`
 reported zero vulnerabilities in the locked npm dependency tree.
@@ -60,6 +60,9 @@ That same test verifies that the default Unified Harness returns
 `method_not_found` for `review/state` and `review/turnDiff`. These procedures
 exist in the legacy Python handler, while the current default adapter does not
 dispatch them. The Changes panel presents their availability explicitly.
+Windows fixture paths are canonicalized to support the runner's `RUNNER~1`
+temporary-directory alias. A junction regression check verifies that the
+picker authorizes the canonical target while raw aliases remain rejected.
 
 The renderer tests cover incremental patches, duplicate and missing events,
 partial snapshots, context handoff, multi-select questions and custom answers.

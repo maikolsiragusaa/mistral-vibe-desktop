@@ -14,7 +14,8 @@ language uses warm light surfaces, dark ink, orange emphasis, compact controls
 and occasional pixel geometry. These are design observations, not an invented
 official token specification.
 
-The app uses its own stepped signal mark. It does not reproduce Mistral's cat,
+The app uses its own stepped signal mark and Ember, an original pixel lantern
+companion. It does not reproduce Mistral's cat,
 wordmark or proprietary font. A visible Community label and an About statement
 identify the independent project.
 
@@ -22,14 +23,14 @@ identify the independent project.
 
 | Role           | Light     | Dark      |
 | -------------- | --------- | --------- |
-| Workspace      | `#fffaf4` | `#171614` |
-| Navigation     | `#f5efe6` | `#201e1b` |
-| Raised surface | `#ffffff` | `#26231f` |
-| Main text      | `#25221e` | `#f5eee5` |
-| Secondary text | `#71695f` | `#b5aa9a` |
-| Border         | `#ded6cb` | `#413a31` |
-| Accent         | `#c04414` | `#ff995c` |
-| Accent surface | `#ffead9` | `#40271b` |
+| Workspace      | `#fcfaf6` | `#16191e` |
+| Navigation     | `#f1eee8` | `#1b1e24` |
+| Raised surface | `#ffffff` | `#20242b` |
+| Main text      | `#252a31` | `#f4f1eb` |
+| Secondary text | `#6e7379` | `#a8aeb7` |
+| Border         | `#dfded9` | `#333942` |
+| Accent         | `#df5720` | `#ff9961` |
+| Accent surface | `#ffecdf` | `#3b2a23` |
 
 Use system sans-serif for the interface and a system monospace for code. Keep
 the main transcript around 72 characters wide. Orange signals the main action,
@@ -42,6 +43,19 @@ Projects and sessions stay together in the left rail. The centre carries the
 conversation and a composer anchored to the workspace. The right panel holds
 Activity, Changes and Environment. A lower shell panel displays upstream shell
 effects and accepts explicit commands through Vibe's shell operation.
+
+The 42-pixel Windows titlebar carries project and activity state plus command
+search. Native controls sit in the overlay's reserved area. Management is a
+separate modal window with a side navigation for MCP, skills, plugins,
+providers, diagnostics and quotas. It keeps the conversation mounted and
+returns focus when closed. Configuration does not appear as a conversation.
+
+Ember shows idle, thinking, working, waiting, completed and error states from
+actual runtime activity. Decorative sequences finish rather than running
+indefinitely. Surface arrivals and control transitions take 160–180 ms;
+closing the management window has a matching short exit. Both system reduced
+motion and the app's motion setting disable them. The companion itself can
+also be hidden.
 
 The first launch is a useful empty workspace with setup status and a clear
 Open project action. It contains no fabricated transcript, token counter or
@@ -71,3 +85,15 @@ The [static layout preview](ui-preview.svg) records the intended proportions and
 Real desktop screenshots then test those decisions at the actual window size.
 The interface is accepted only after checking both themes, setup, project
 navigation, focus and narrow-window behavior in the running app.
+
+The 0.2 refinement also adds draggable collapse/reopen edges for both sidebars,
+with button and keyboard alternatives. The titlebar uses a compact MCP status
+popover instead of repeating the composer's execution status. Reasoning entries
+supplied by Vibe remain expandable and open while streaming; unsupported
+provider reasoning is not reconstructed.
+
+The activity language follows upstream CLI loading and thinking controls:
+[loading states](https://github.com/mistralai/mistral-vibe/blob/4ae5c5955da8e761318916bdb1a7f46f0b50c7d0/vibe/cli-rust/src/ui/loading/mod.rs)
+and [thinking picker](https://github.com/mistralai/mistral-vibe/blob/4ae5c5955da8e761318916bdb1a7f46f0b50c7d0/vibe/cli-rust/src/thinking_picker.rs).
+Desktop rendering uses the public session projection and shared tool display
+status text. It does not parse terminal output or copy a separate execution loop.

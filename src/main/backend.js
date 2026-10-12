@@ -10,6 +10,50 @@ const MAX_PREFS_BYTES = 64 * 1024;
 const MAX_RECENT_PROJECTS = 20;
 const THEMES = new Set(["light", "dark", "system"]);
 const CALLBACK_KINDS = ["approval", "user_input"];
+const MAX_CONFIG_OPS = 100;
+const MAX_CONFIG_ITEMS = 128;
+const MAX_CONFIG_DEPTH = 8;
+const MAX_INLINE_IMAGE_BYTES = 8 * 1024 * 1024;
+const MAX_TEXT_RESOURCE_BYTES = 8 * 1024 * 1024;
+const SAFE_PROVIDER_FIELDS = new Set([
+  "name",
+  "api_base",
+  "api_key_env_var",
+  "api_style",
+  "backend",
+  "reasoning_field_name",
+  "emits_finish_reason",
+  "project_id",
+  "region",
+]);
+const SAFE_MODEL_FIELDS = new Set([
+  "name",
+  "provider",
+  "alias",
+  "display_name",
+  "temperature",
+  "top_p",
+  "max_output_tokens",
+  "input_price",
+  "output_price",
+  "cached_input_price",
+  "thinking",
+  "thinking_levels",
+  "supports_images",
+  "max_context_length",
+  "auto_compact_threshold",
+]);
+const SAFE_MCP_FIELDS = new Set([
+  "name",
+  "transport",
+  "url",
+  "prompt",
+  "startup_timeout_sec",
+  "tool_timeout_sec",
+  "sampling_enabled",
+  "disabled",
+  "disabled_tools",
+]);
 
 const PARAM_KEYS = Object.freeze({
   "setup/status": ["provider"],
@@ -24,6 +68,7 @@ const PARAM_KEYS = Object.freeze({
     "pinned",
     "includeArchived",
   ],
+  "session/lease/subscribe": [],
   "session/start": ["agentConfig", "historyLimit", "idempotencyKey", "kind"],
   "session/resume": ["sessionId", "agentConfig", "historyLimit"],
   "session/read": ["sessionId", "history", "turns"],
@@ -54,6 +99,7 @@ const PARAM_KEYS = Object.freeze({
   ],
   "callback/result": ["sessionId", "result"],
   "runtime/read": ["sessionId"],
+  "account/read": ["sessionId"],
   "agents/list": ["sessionId"],
   "session/agent/update": ["sessionId", "agentName"],
   "config/model/write": ["sessionId", "modelAlias", "reasoningEffort"],
@@ -75,6 +121,51 @@ const PARAM_KEYS = Object.freeze({
     "action",
   ],
   "session/history/list": ["sessionId", "turnId", "page"],
+  "session/turn/enqueue": ["sessionId", "idempotencyKey", "entries"],
+  "session/turn/queue/read": ["sessionId"],
+  "session/turn/queue/remove": ["sessionId", "queueItemId"],
+  "session/turn/queue/replace": [
+    "sessionId",
+    "queueItemId",
+    "idempotencyKey",
+    "entries",
+  ],
+  "session/turn/queue/steer": ["sessionId", "queueItemId", "expectedTurnId"],
+  "session/turn/queue/resume": ["sessionId"],
+  "config/schema": [],
+  "config/read": ["sessionId", "cwd"],
+  "config/effective/read": ["sessionId"],
+  "config/fields/read": ["sessionId"],
+  "config/write": ["sessionId", "ops", "reason", "reloadRuntime"],
+  "config/reload": ["sessionId", "reloadRuntime"],
+  "mcp_catalog/read": ["sessionId"],
+  "mcp_catalog/refresh": ["sessionId"],
+  "mcp_catalog/toggle": ["sessionId", "name", "source", "disabled", "toolName"],
+  "mcp_catalog/add": [
+    "sessionId",
+    "url",
+    "name",
+    "scopes",
+    "transport",
+    "allowInsecureHttp",
+  ],
+  "mcp_catalog/remove": ["sessionId", "name"],
+  "mcp_catalog/login": ["sessionId", "name"],
+  "mcp_catalog/logout": ["sessionId", "name"],
+  "connector_catalog/read": ["sessionId"],
+  "connector_catalog/refresh": ["sessionId"],
+  "connector_catalog/toggle": ["sessionId", "alias", "disabled", "toolName"],
+  "connector_catalog/auth/request": ["sessionId", "alias"],
+  "connectors/read": ["sessionId"],
+  "connectors/refresh": ["sessionId"],
+  "connectors/auth/read": ["sessionId", "name"],
+  "skills/catalog": ["sessionId"],
+  "skills/installed": ["sessionId"],
+  "skills/detail": ["sessionId", "skillId", "version"],
+  "skills/setEnabled": ["sessionId", "name", "enabled"],
+  "plugin_catalog/read": ["sessionId"],
+  "plugin/info": ["sessionId"],
+  "plugin/reload": ["sessionId"],
   "mcp/read": ["sessionId"],
   "skills/list": ["sessionId"],
   "plugins/read": ["sessionId"],
@@ -95,6 +186,7 @@ const REQUIRED_KEYS = Object.freeze({
   "turn/steer": ["sessionId", "expectedTurnId", "message"],
   "callback/result": ["sessionId", "result"],
   "runtime/read": ["sessionId"],
+  "account/read": ["sessionId"],
   "session/agent/update": ["sessionId", "agentName"],
   "config/model/write": ["sessionId"],
   "stats/read": ["sessionId"],
@@ -106,6 +198,37 @@ const REQUIRED_KEYS = Object.freeze({
   "workspace/trust/decision": ["decision", "sessionId"],
   "workspace/git/worktrees/list": ["cwd"],
   "session/history/list": ["sessionId"],
+  "session/turn/enqueue": ["sessionId", "entries"],
+  "session/turn/queue/read": ["sessionId"],
+  "session/turn/queue/remove": ["sessionId", "queueItemId"],
+  "session/turn/queue/replace": ["sessionId", "queueItemId", "entries"],
+  "session/turn/queue/steer": ["sessionId", "queueItemId", "expectedTurnId"],
+  "session/turn/queue/resume": ["sessionId"],
+  "config/effective/read": ["sessionId"],
+  "config/fields/read": ["sessionId"],
+  "config/write": ["sessionId", "ops"],
+  "config/reload": ["sessionId"],
+  "mcp_catalog/read": ["sessionId"],
+  "mcp_catalog/refresh": ["sessionId"],
+  "mcp_catalog/toggle": ["sessionId", "name", "source", "disabled"],
+  "mcp_catalog/add": ["sessionId", "url"],
+  "mcp_catalog/remove": ["sessionId", "name"],
+  "mcp_catalog/login": ["sessionId", "name"],
+  "mcp_catalog/logout": ["sessionId", "name"],
+  "connector_catalog/read": ["sessionId"],
+  "connector_catalog/refresh": ["sessionId"],
+  "connector_catalog/toggle": ["sessionId", "alias", "disabled"],
+  "connector_catalog/auth/request": ["sessionId", "alias"],
+  "connectors/read": ["sessionId"],
+  "connectors/refresh": ["sessionId"],
+  "connectors/auth/read": ["sessionId", "name"],
+  "skills/catalog": ["sessionId"],
+  "skills/installed": ["sessionId"],
+  "skills/detail": ["sessionId", "skillId"],
+  "skills/setEnabled": ["sessionId", "name", "enabled"],
+  "plugin_catalog/read": ["sessionId"],
+  "plugin/info": ["sessionId"],
+  "plugin/reload": ["sessionId"],
   "mcp/read": ["sessionId"],
   "skills/list": ["sessionId"],
   "plugins/read": ["sessionId"],
@@ -115,13 +238,13 @@ const REQUIRED_KEYS = Object.freeze({
 const ACTIVE_SESSION_METHODS = new Set([
   "session/stop",
   "session/title/update",
-  "session/pin",
-  "session/archive",
   "turn/start",
   "turn/interrupt",
   "turn/steer",
   "callback/result",
   "runtime/read",
+  "account/read",
+  "config/read",
   "agents/list",
   "session/agent/update",
   "config/model/write",
@@ -133,6 +256,37 @@ const ACTIVE_SESSION_METHODS = new Set([
   "review/approve",
   "workspace/trust/decision",
   "session/shellCommand",
+  "session/turn/enqueue",
+  "session/turn/queue/read",
+  "session/turn/queue/remove",
+  "session/turn/queue/replace",
+  "session/turn/queue/steer",
+  "session/turn/queue/resume",
+  "config/effective/read",
+  "config/fields/read",
+  "config/write",
+  "config/reload",
+  "mcp_catalog/read",
+  "mcp_catalog/refresh",
+  "mcp_catalog/toggle",
+  "mcp_catalog/add",
+  "mcp_catalog/remove",
+  "mcp_catalog/login",
+  "mcp_catalog/logout",
+  "connector_catalog/read",
+  "connector_catalog/refresh",
+  "connector_catalog/toggle",
+  "connector_catalog/auth/request",
+  "connectors/read",
+  "connectors/refresh",
+  "connectors/auth/read",
+  "skills/catalog",
+  "skills/installed",
+  "skills/detail",
+  "skills/setEnabled",
+  "plugin_catalog/read",
+  "plugin/info",
+  "plugin/reload",
   "mcp/read",
   "skills/list",
   "plugins/read",
@@ -140,9 +294,19 @@ const ACTIVE_SESSION_METHODS = new Set([
 ]);
 
 const SESSION_READ_METHODS = new Set(["session/read", "session/history/list"]);
+const SESSION_METADATA_METHODS = new Set(["session/pin", "session/archive"]);
 
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isLeaseHolder(value) {
+  return (
+    value === null ||
+    (isObject(value) &&
+      (value.processId === null ||
+        (Number.isSafeInteger(value.processId) && value.processId > 0)))
+  );
 }
 
 function requireObject(value, label) {
@@ -278,7 +442,10 @@ export class VibeBackend extends EventEmitter {
     this.activeProjectRoot = null;
     this.activeTurnId = null;
     this.knownSessions = new Map();
+    this.sessionLeaseHolders = new Map();
+    this.leaseSnapshotReady = false;
     this.pendingCallbacks = new Map();
+    this.configTargetsBySession = new Map();
     this.authorizedProjects = new Map();
     this.preferences = { theme: "system", recentProjects: [] };
     this.preferencesLoaded = false;
@@ -341,6 +508,9 @@ export class VibeBackend extends EventEmitter {
       throw new TypeError("Unsupported Vibe method");
     const params = this.#validateParams(method, rawParams);
 
+    if (method === "session/list" && params.cwds?.length === 0)
+      return { items: [] };
+
     if (method === "session/start") {
       await this.#switchSessionIfNeeded();
     } else if (method === "session/resume") {
@@ -361,7 +531,50 @@ export class VibeBackend extends EventEmitter {
       this.activeTurnId = null;
       this.#setStatus("disconnected");
     }
+    if (method === "session/list" && Array.isArray(result?.items))
+      return {
+        ...result,
+        items: result.items
+          .filter(
+            (session) =>
+              typeof session?.id === "string" &&
+              this.#isAuthorizedKnownSession(session.id),
+          )
+          .map((session) =>
+            this.leaseSnapshotReady
+              ? {
+                  ...session,
+                  leaseHolder: this.sessionLeaseHolders.get(session.id) ?? null,
+                }
+              : session,
+          ),
+      };
+    if (method === "session/lease/subscribe" && Array.isArray(result?.held))
+      return {
+        ...result,
+        held: result.held
+          .filter(
+            (item) =>
+              isObject(item) &&
+              typeof item.sessionId === "string" &&
+              isLeaseHolder(item.leaseHolder) &&
+              this.#isAuthorizedKnownSession(item.sessionId),
+          )
+          .map((item) => ({
+            sessionId: item.sessionId,
+            leaseHolder:
+              item.leaseHolder === null
+                ? null
+                : { processId: item.leaseHolder.processId },
+          })),
+      };
     return result;
+  }
+
+  validateResumeForPool(rawParams) {
+    const params = this.#validateParams("session/resume", rawParams);
+    this.#authorizeResume(params);
+    return params;
   }
 
   async chooseProject() {
@@ -382,10 +595,28 @@ export class VibeBackend extends EventEmitter {
     return structuredClone(this.preferences);
   }
 
+  async authorizeProjectRoot(rawPath) {
+    await this.#loadPreferences();
+    const canonical = await this.#canonicalDirectory(rawPath);
+    if (!this.authorizedProjects.has(stablePathKey(canonical)))
+      throw new Error(
+        "Choose this project folder before using workspace tools",
+      );
+    return canonical;
+  }
+
   async savePreferences(input) {
     await this.#loadPreferences();
     requireObject(input, "preferences");
-    assertOnlyKeys(input, ["theme", "recentProjects"], "preferences");
+    assertOnlyKeys(
+      input,
+      ["theme", "recentProjects", "mascot", "motion"],
+      "preferences",
+    );
+    for (const option of ["mascot", "motion"]) {
+      if (input[option] !== undefined && typeof input[option] !== "boolean")
+        throw new TypeError(`${option} must be a boolean`);
+    }
     if (!THEMES.has(input.theme)) throw new TypeError("Unsupported theme");
     if (
       !Array.isArray(input.recentProjects) ||
@@ -408,6 +639,8 @@ export class VibeBackend extends EventEmitter {
       }
     }
     const next = { theme: input.theme, recentProjects };
+    for (const option of ["mascot", "motion"])
+      if (input[option] !== undefined) next[option] = input[option];
     await this.fs.mkdir(this.app.getPath("userData"), { recursive: true });
     const prefsPath = this.#preferencesPath();
     const tempPath = `${prefsPath}.${this.now()}.tmp`;
@@ -467,6 +700,7 @@ export class VibeBackend extends EventEmitter {
   }
 
   async #launch() {
+    this.#clearLeaseSnapshot();
     const userData = this.app.getPath("userData");
     await this.fs.mkdir(userData, { recursive: true });
     const command = resolveServerExecutable({
@@ -487,7 +721,20 @@ export class VibeBackend extends EventEmitter {
     const rpc = new JsonRpcClient(child, { maxFrameBytes: MAX_RPC_BYTES });
     this.rpc = rpc;
     rpc.on("event", (event) => {
-      this.#trackEvent(event);
+      if (this.#trackEvent(event) === false) return;
+      if (event?.method === "session/lease/updated") {
+        this.emit("event", {
+          ...event,
+          params: {
+            sessionId: event.params.sessionId,
+            leaseHolder:
+              event.params.leaseHolder === null
+                ? null
+                : { processId: event.params.leaseHolder.processId },
+          },
+        });
+        return;
+      }
       this.emit("event", event);
     });
     rpc.on("transportError", (error) => {
@@ -496,6 +743,7 @@ export class VibeBackend extends EventEmitter {
       this.activeProjectRoot = null;
       this.activeTurnId = null;
       this.pendingCallbacks.clear();
+      this.#clearLeaseSnapshot();
       this.#setStatus("error", safeMessage(error));
     });
     rpc.on("exit", () => {
@@ -506,6 +754,7 @@ export class VibeBackend extends EventEmitter {
       this.activeProjectRoot = null;
       this.activeTurnId = null;
       this.pendingCallbacks.clear();
+      this.#clearLeaseSnapshot();
       this.#setStatus("disconnected");
     });
   }
@@ -545,6 +794,7 @@ export class VibeBackend extends EventEmitter {
     this.rpc = null;
     this.child = null;
     this.pendingCallbacks.clear();
+    this.#clearLeaseSnapshot();
     rpc?.close();
     if (!child || child.exitCode !== null) return;
     try {
@@ -581,6 +831,14 @@ export class VibeBackend extends EventEmitter {
 
     if (input.sessionId !== undefined)
       requireString(input.sessionId, "sessionId", { max: 256 });
+    if (method === "config/read") {
+      if ((input.sessionId === undefined) === (input.cwd === undefined))
+        throw new TypeError(
+          "config/read requires exactly one of sessionId or cwd",
+        );
+      if (input.cwd !== undefined)
+        this.#validateProjectPath(input.cwd, { required: true, exact: true });
+    }
     if (method === "setup/status" && input.provider !== undefined)
       requireString(input.provider, "provider", { max: 128 });
     if (method === "setup/store-credential") {
@@ -602,8 +860,90 @@ export class VibeBackend extends EventEmitter {
       throw new TypeError("pinned must be a boolean");
     if (method === "session/archive" && typeof input.archived !== "boolean")
       throw new TypeError("archived must be a boolean");
-    if (method === "turn/start" || method === "turn/steer") {
-      validateTextMessage(input.message);
+    if (method === "turn/start" || method === "turn/steer")
+      validateTurnContent(input.message);
+    if (method === "turn/start") {
+      if (input.injected === true)
+        throw new TypeError(
+          "Renderer requests cannot mark user input as injected context",
+        );
+      validateTurnMetadata(input);
+    }
+    if (method === "turn/steer") {
+      if (input.injectInvokedSkill === true)
+        throw new TypeError("Renderer requests cannot inject skill context");
+      validateTurnMetadata(input);
+    }
+    if (
+      method === "session/turn/enqueue" ||
+      method.startsWith("session/turn/queue/")
+    )
+      validateQueueParams(method, input);
+    if (method === "config/write") validateConfigWrite(input);
+    if (method === "config/write" && Array.isArray(input.ops)) {
+      const knownTargets = this.configTargetsBySession.get(input.sessionId);
+      for (const op of input.ops) {
+        if (op?.targetLayer !== undefined) {
+          requireString(op.targetLayer, "targetLayer", { max: 128 });
+          if (!knownTargets?.has(op.targetLayer))
+            throw new Error(
+              "Read config/fields before selecting a write target",
+            );
+        }
+      }
+    }
+    if (
+      method === "config/reload" &&
+      input.reloadRuntime !== undefined &&
+      typeof input.reloadRuntime !== "boolean"
+    )
+      throw new TypeError("reloadRuntime must be a boolean");
+    if (method === "mcp_catalog/toggle") {
+      requireString(input.name, "name", { max: 256 });
+      if (input.source !== "server")
+        throw new TypeError(
+          "Only server-owned MCP catalog entries can be toggled here",
+        );
+      if (typeof input.disabled !== "boolean")
+        throw new TypeError("disabled must be a boolean");
+      if (input.toolName !== undefined)
+        requireString(input.toolName, "toolName", { max: 256 });
+    }
+    if (method === "mcp_catalog/add") validateMcpAdd(input);
+    if (
+      [
+        "mcp_catalog/remove",
+        "mcp_catalog/login",
+        "mcp_catalog/logout",
+      ].includes(method)
+    )
+      requireString(input.name, "name", { max: 256 });
+    if (
+      ["connector_catalog/toggle", "connector_catalog/auth/request"].includes(
+        method,
+      )
+    )
+      requireString(input.alias, "alias", { max: 256 });
+    if (method === "connector_catalog/toggle") {
+      if (typeof input.disabled !== "boolean")
+        throw new TypeError("disabled must be a boolean");
+      if (input.toolName !== undefined)
+        requireString(input.toolName, "toolName", { max: 256 });
+    }
+    if (method === "connectors/auth/read")
+      requireString(input.name, "name", { max: 256 });
+    if (method === "skills/detail") {
+      requireString(input.skillId, "skillId", { max: 512 });
+      if (
+        input.version !== undefined &&
+        (!Number.isInteger(input.version) || input.version < 1)
+      )
+        throw new TypeError("version must be a positive integer");
+    }
+    if (method === "skills/setEnabled") {
+      requireString(input.name, "name", { max: 256 });
+      if (typeof input.enabled !== "boolean")
+        throw new TypeError("enabled must be a boolean");
     }
     if (method === "callback/result") validateCallbackResult(input.result);
     if (method === "session/agent/update")
@@ -665,6 +1005,11 @@ export class VibeBackend extends EventEmitter {
       for (const cwd of params.cwds)
         this.#validateProjectPath(cwd, { required: true, exact: true });
     }
+    if (params.cwd === undefined && params.cwds === undefined)
+      params.cwds = [...this.authorizedProjects.values()].slice(
+        0,
+        MAX_RECENT_PROJECTS,
+      );
     if (
       params.limit !== undefined &&
       (!Number.isInteger(params.limit) ||
@@ -728,9 +1073,28 @@ export class VibeBackend extends EventEmitter {
     const sessionId = params.sessionId;
     if (!sessionId) return;
     if (SESSION_READ_METHODS.has(method)) {
-      if (!this.knownSessions.has(sessionId))
+      const entry = this.knownSessions.get(sessionId);
+      if (
+        !entry?.allowedRoots.some((root) =>
+          this.authorizedProjects.has(stablePathKey(root)),
+        )
+      )
         throw new Error(
           "Read the project session list before opening this session",
+        );
+      return;
+    }
+    if (SESSION_METADATA_METHODS.has(method)) {
+      const entry = this.knownSessions.get(sessionId);
+      if (
+        !entry ||
+        entry.readOnlyChild ||
+        !entry.allowedRoots.some((root) =>
+          this.authorizedProjects.has(stablePathKey(root)),
+        )
+      )
+        throw new Error(
+          "Only a listed session for a chosen project can be pinned or archived",
         );
       return;
     }
@@ -756,8 +1120,13 @@ export class VibeBackend extends EventEmitter {
 
   #authorizeResume(params) {
     const entry = this.knownSessions.get(params.sessionId);
+    if (entry?.readOnlyChild)
+      throw new Error(
+        "Subagent sessions are read-only and remain controlled by their parent",
+      );
     if (
       !entry ||
+      entry.readOnlyChild ||
       !entry.allowedRoots.some((root) =>
         this.authorizedProjects.has(stablePathKey(root)),
       )
@@ -780,7 +1149,33 @@ export class VibeBackend extends EventEmitter {
 
   #recordResult(method, params, result) {
     const state = result?.state;
-    if (method === "session/list") {
+    if (method === "session/lease/subscribe") {
+      this.sessionLeaseHolders.clear();
+      this.leaseSnapshotReady = Array.isArray(result?.held);
+      for (const item of result?.held ?? []) {
+        if (
+          !isObject(item) ||
+          typeof item.sessionId !== "string" ||
+          !isLeaseHolder(item.leaseHolder)
+        )
+          continue;
+        if (item.leaseHolder !== null)
+          this.sessionLeaseHolders.set(item.sessionId, {
+            processId: item.leaseHolder.processId,
+          });
+      }
+      this.#trimLeaseSnapshot();
+    } else if (method === "config/fields/read") {
+      if (Array.isArray(result?.targets))
+        this.configTargetsBySession.set(
+          params.sessionId,
+          new Set(
+            result.targets
+              .filter((target) => typeof target === "string")
+              .slice(0, 32),
+          ),
+        );
+    } else if (method === "session/list") {
       const roots = params.cwd
         ? [this.#canonicalProjectSyncLookup(params.cwd)].filter(Boolean)
         : (params.cwds
@@ -799,10 +1194,12 @@ export class VibeBackend extends EventEmitter {
         this.#rememberSession(session, roots);
         this.activeSessionId = session.id;
         this.activeProjectRoot = roots[0] ?? null;
+        this.#rememberChildSessions(state);
       }
     } else if (method === "session/read" && state?.session?.id) {
       const previous = this.knownSessions.get(state.session.id);
       this.#rememberSession(state.session, previous?.allowedRoots ?? []);
+      this.#rememberChildSessions(state);
     } else if (
       method === "turn/start" &&
       result?.turn?.status === "in_progress" &&
@@ -819,6 +1216,47 @@ export class VibeBackend extends EventEmitter {
   #trackEvent(event) {
     const params = event?.params;
     if (!isObject(params)) return;
+    if (event.method === "session/lease/updated") {
+      if (
+        typeof params.sessionId !== "string" ||
+        !isLeaseHolder(params.leaseHolder)
+      )
+        return false;
+      if (params.leaseHolder === null) {
+        this.sessionLeaseHolders.delete(params.sessionId);
+      } else {
+        this.sessionLeaseHolders.set(params.sessionId, {
+          processId: params.leaseHolder.processId,
+        });
+        this.#trimLeaseSnapshot();
+      }
+      return this.#isAuthorizedKnownSession(params.sessionId);
+    }
+    if (event.method === "session/lease/ended") {
+      this.sessionLeaseHolders.clear();
+      this.leaseSnapshotReady = false;
+      return;
+    }
+    if (event.method === "session/childSessionUpdated") {
+      this.#rememberChildSession(params.childSession, params.sessionId);
+      return;
+    }
+    if (
+      [
+        "session/snapshot",
+        "session/compacted",
+        "session/contextCleared",
+      ].includes(event.method)
+    ) {
+      const state = params.state;
+      if (isObject(state)) {
+        const sessionId = state.session?.id;
+        const previous = this.knownSessions.get(sessionId);
+        if (sessionId && previous?.allowedRoots?.length)
+          this.#rememberSession(state.session, previous.allowedRoots);
+        this.#rememberChildSessions(state);
+      }
+    }
     if (event.method === "callback/call") {
       const callback = params.callback;
       const callbackId = callback?.callbackId;
@@ -861,16 +1299,100 @@ export class VibeBackend extends EventEmitter {
 
   #rememberSession(session, allowedRoots) {
     if (!session || typeof session.id !== "string") return;
+    const previous = this.knownSessions.get(session.id);
+    const candidateRoots = allowedRoots.filter((root) =>
+      this.authorizedProjects.has(stablePathKey(root)),
+    );
+    const previousRoots = (previous?.allowedRoots ?? []).filter((root) =>
+      this.authorizedProjects.has(stablePathKey(root)),
+    );
+    let scopedRoots = previous?.readOnlyChild
+      ? candidateRoots.filter((root) =>
+          previous.allowedRoots?.some(
+            (previousRoot) =>
+              stablePathKey(previousRoot) === stablePathKey(root),
+          ),
+        )
+      : typeof session.cwd === "string"
+        ? candidateRoots
+        : previousRoots.length
+          ? candidateRoots.filter((root) =>
+              previousRoots.some(
+                (previousRoot) =>
+                  stablePathKey(previousRoot) === stablePathKey(root),
+              ),
+            )
+          : candidateRoots.length === 1
+            ? candidateRoots
+            : [];
+    if (!previous?.readOnlyChild && typeof session.cwd === "string") {
+      const sessionCwd = this.#canonicalProjectSyncLookup(session.cwd);
+      scopedRoots = sessionCwd
+        ? candidateRoots.filter((root) => isInside(root, sessionCwd))
+        : [];
+    }
+    if (scopedRoots.length === 0) {
+      this.knownSessions.delete(session.id);
+      return;
+    }
     this.knownSessions.set(session.id, {
+      ...previous,
       cwd: typeof session.cwd === "string" ? session.cwd : null,
       allowedRoots: [
         ...new Map(
-          allowedRoots.map((root) => [stablePathKey(root), root]),
+          scopedRoots.map((root) => [stablePathKey(root), root]),
         ).values(),
       ],
     });
     if (this.knownSessions.size > 5000)
       this.knownSessions.delete(this.knownSessions.keys().next().value);
+  }
+
+  #isAuthorizedKnownSession(sessionId) {
+    if (typeof sessionId !== "string") return false;
+    const entry = this.knownSessions.get(sessionId);
+    return Boolean(
+      entry?.allowedRoots.some((root) =>
+        this.authorizedProjects.has(stablePathKey(root)),
+      ),
+    );
+  }
+
+  #trimLeaseSnapshot() {
+    while (this.sessionLeaseHolders.size > 5000)
+      this.sessionLeaseHolders.delete(
+        this.sessionLeaseHolders.keys().next().value,
+      );
+  }
+
+  #clearLeaseSnapshot() {
+    this.sessionLeaseHolders.clear();
+    this.leaseSnapshotReady = false;
+  }
+
+  #rememberChildSessions(state) {
+    const parentSessionId = state?.session?.id;
+    const parent = this.knownSessions.get(parentSessionId);
+    if (!parent?.allowedRoots?.length) return;
+    for (const childSession of state.childSessions ?? [])
+      this.#rememberChildSession(childSession, parentSessionId);
+  }
+
+  #rememberChildSession(childSession, parentSessionId) {
+    if (
+      !childSession ||
+      typeof childSession.id !== "string" ||
+      typeof parentSessionId !== "string"
+    )
+      return;
+    const parent = this.knownSessions.get(parentSessionId);
+    if (!parent?.allowedRoots?.length) return;
+    this.knownSessions.set(childSession.id, {
+      cwd: parent.cwd,
+      allowedRoots: [...parent.allowedRoots],
+      readOnlyChild: true,
+      parentSessionId,
+    });
   }
 
   #validateProjectPath(
@@ -955,6 +1477,9 @@ export class VibeBackend extends EventEmitter {
           }
         }
         this.preferences = { theme, recentProjects: projects };
+        for (const option of ["mascot", "motion"])
+          if (typeof stored[option] === "boolean")
+            this.preferences[option] = stored[option];
       } catch {
         this.preferences = { theme: "system", recentProjects: [] };
       }
@@ -1113,18 +1638,612 @@ function validateCallbackAgainstPending(result, pending) {
   }
 }
 
-function validateTextMessage(message) {
-  if (!Array.isArray(message) || message.length === 0 || message.length > 64) {
+function validateTurnContent(content, { sessionQueue = false } = {}) {
+  if (!Array.isArray(content) || content.length === 0 || content.length > 64)
     throw new TypeError(
-      "message must be a non-empty array with at most 64 text blocks",
+      "content must be a non-empty array with at most 64 blocks",
+    );
+  for (const block of content) {
+    requireObject(block, "content block");
+    if (block.type === "text") {
+      assertOnlyKeys(block, ["type", "text"], "text content block");
+      requireString(block.text, "message text", { max: 100_000 });
+    } else if (block.type === "image" && !sessionQueue) {
+      assertOnlyKeys(block, ["type", "attachment"], "image content block");
+      const attachment = block.attachment;
+      requireObject(attachment, "image attachment");
+      assertOnlyKeys(
+        attachment,
+        ["source", "alias", "mimeType"],
+        "image attachment",
+      );
+      requireString(attachment.alias, "image alias", { max: 512 });
+      const mimeType = requireString(attachment.mimeType, "image mimeType", {
+        max: 64,
+      });
+      if (!["image/png", "image/jpeg", "image/webp"].includes(mimeType))
+        throw new TypeError(
+          "Only PNG, JPEG, and WebP attachments are supported",
+        );
+      requireObject(attachment.source, "image source");
+      assertOnlyKeys(attachment.source, ["kind", "data"], "image source");
+      if (attachment.source.kind !== "inline")
+        throw new TypeError("Image attachments must contain inline data");
+      validateBase64(
+        attachment.source.data,
+        MAX_INLINE_IMAGE_BYTES,
+        "image data",
+      );
+    } else if (block.type === "resource" && !sessionQueue) {
+      assertOnlyKeys(block, ["type", "resource"], "resource content block");
+      const resource = block.resource;
+      requireObject(resource, "user resource");
+      assertOnlyKeys(
+        resource,
+        ["kind", "uri", "mediaType", "text"],
+        "text resource",
+      );
+      if (resource.kind !== "text")
+        throw new TypeError("Only text resources are supported");
+      validateResourceUri(resource.uri);
+      if (
+        resource.mediaType !== undefined &&
+        !String(resource.mediaType).startsWith("text/")
+      )
+        throw new TypeError("Text resources must use a text media type");
+      const text = requireString(resource.text, "resource text", {
+        min: 0,
+        max: MAX_TEXT_RESOURCE_BYTES,
+      });
+      if (Buffer.byteLength(text, "utf8") > MAX_TEXT_RESOURCE_BYTES)
+        throw new TypeError("Text resource exceeds the 8 MiB limit");
+    } else if (sessionQueue && block.type === "embedded_resource") {
+      assertOnlyKeys(
+        block,
+        ["type", "uri", "mediaType", "text"],
+        "embedded text resource",
+      );
+      validateResourceUri(block.uri);
+      if (
+        block.mediaType !== undefined &&
+        !String(block.mediaType).startsWith("text/")
+      )
+        throw new TypeError("Embedded resources must use a text media type");
+      const text = requireString(block.text, "embedded resource text", {
+        min: 0,
+        max: MAX_TEXT_RESOURCE_BYTES,
+      });
+      if (Buffer.byteLength(text, "utf8") > MAX_TEXT_RESOURCE_BYTES)
+        throw new TypeError("Embedded resource exceeds the 8 MiB limit");
+    } else if (sessionQueue && block.type === "image") {
+      assertOnlyKeys(
+        block,
+        ["type", "uri", "mediaType", "altText"],
+        "queued image block",
+      );
+      if (
+        !/^data:image\/(?:png|jpeg|webp);base64,/i.test(
+          requireString(block.uri, "image URI", { max: 12 * 1024 * 1024 }),
+        )
+      )
+        throw new TypeError("Queued images must use inline data URIs");
+      const [header, data] = block.uri.split(",", 2);
+      validateBase64(data, MAX_INLINE_IMAGE_BYTES, "queued image data");
+      const mimeType = header.slice(5, header.indexOf(";"));
+      if (block.mediaType !== undefined && block.mediaType !== mimeType)
+        throw new TypeError(
+          "Queued image mediaType does not match its data URI",
+        );
+      if (block.altText !== undefined)
+        requireString(block.altText, "altText", { min: 0, max: 2000 });
+    } else if (sessionQueue && block.type === "resource_link") {
+      assertOnlyKeys(
+        block,
+        ["type", "uri", "name", "title", "description", "mediaType", "size"],
+        "resource link block",
+      );
+      validateResourceUri(block.uri);
+      for (const key of ["name", "title", "description", "mediaType"])
+        if (block[key] !== undefined && block[key] !== null)
+          requireString(block[key], key, { max: 2000 });
+      if (
+        block.size !== undefined &&
+        (!Number.isSafeInteger(block.size) ||
+          block.size < 0 ||
+          block.size > MAX_TEXT_RESOURCE_BYTES)
+      )
+        throw new TypeError("resource link size is invalid");
+    } else {
+      throw new TypeError("Unsupported content block");
+    }
+  }
+}
+
+function validateBase64(value, maxDecodedBytes, label) {
+  requireString(value, label, {
+    min: 4,
+    max: Math.ceil((maxDecodedBytes * 4) / 3) + 8,
+  });
+  if (
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+      value,
+    )
+  )
+    throw new TypeError(`${label} must be valid base64`);
+  const decodedLength = Buffer.from(value, "base64").byteLength;
+  if (!decodedLength || decodedLength > maxDecodedBytes)
+    throw new TypeError(
+      `${label} must decode to at most ${maxDecodedBytes} bytes`,
+    );
+}
+
+function validateResourceUri(value) {
+  const uri = requireString(value, "resource URI", { max: 2048 });
+  let parsed;
+  try {
+    parsed = new URL(uri);
+  } catch {
+    throw new TypeError("Resource URI must be an absolute urn or HTTPS URI");
+  }
+  if (parsed.protocol !== "urn:" && parsed.protocol !== "https:")
+    throw new TypeError("Resource URI must use urn: or https:");
+  if (parsed.username || parsed.password)
+    throw new TypeError("Resource URI cannot contain credentials");
+}
+
+function validateQueueParams(method, params) {
+  if (
+    method === "session/turn/queue/read" ||
+    method === "session/turn/queue/resume"
+  )
+    return;
+  if (
+    [
+      "session/turn/queue/remove",
+      "session/turn/queue/steer",
+      "session/turn/queue/replace",
+    ].includes(method)
+  )
+    requireString(params.queueItemId, "queueItemId", { max: 256 });
+  if (method === "session/turn/queue/steer")
+    requireString(params.expectedTurnId, "expectedTurnId", { max: 256 });
+  if (
+    method === "session/turn/enqueue" ||
+    method === "session/turn/queue/replace"
+  ) {
+    if (
+      !Array.isArray(params.entries) ||
+      params.entries.length < 1 ||
+      params.entries.length > 16
+    )
+      throw new TypeError("entries must contain between 1 and 16 items");
+    for (const entry of params.entries) {
+      requireObject(entry, "turn queue entry");
+      assertOnlyKeys(
+        entry,
+        ["role", "entryId", "content", "annotations"],
+        "turn queue entry",
+      );
+      if (!["user", "context"].includes(entry.role))
+        throw new TypeError("Turn queue role must be user or context");
+      if (entry.entryId !== undefined && entry.entryId !== null)
+        requireString(entry.entryId, "entryId", { max: 256 });
+      validateTurnContent(entry.content, { sessionQueue: true });
+      if (entry.annotations !== undefined)
+        validateQueueAnnotations(entry.annotations);
+    }
+    const userEntries = params.entries.filter((entry) => entry.role === "user");
+    if (
+      userEntries.length > 1 ||
+      (userEntries.length && params.entries.at(-1).role !== "user")
+    )
+      throw new TypeError("A queued turn has at most one final user entry");
+  }
+  if (params.idempotencyKey !== undefined)
+    requireString(params.idempotencyKey, "idempotencyKey", { max: 256 });
+}
+
+function validateQueueAnnotations(value) {
+  requireObject(value, "annotations");
+  assertOnlyKeys(value, ["vibe.userDisplayContent"], "annotations");
+  const content = value["vibe.userDisplayContent"];
+  if (content === undefined || content === null) return;
+  requireObject(content, "user display content");
+  assertOnlyKeys(
+    content,
+    ["version", "host", "content"],
+    "user display content",
+  );
+  requireString(content.version, "display content version", { max: 128 });
+  requireString(content.host, "display content host", { max: 128 });
+  validateBoundedJson(content.content, "display content", 0);
+}
+
+function validateTurnMetadata(params) {
+  if (params.idempotencyKey !== undefined)
+    requireString(params.idempotencyKey, "idempotencyKey", { max: 256 });
+  if (params.clientUserMessageId !== undefined)
+    requireString(params.clientUserMessageId, "clientUserMessageId", {
+      max: 256,
+    });
+  if (params.autoTitle !== undefined && params.autoTitle !== null)
+    requireString(params.autoTitle, "autoTitle", { min: 0, max: 500 });
+  if (params.injected !== undefined && typeof params.injected !== "boolean")
+    throw new TypeError("injected must be a boolean");
+  if (
+    params.injectInvokedSkill !== undefined &&
+    typeof params.injectInvokedSkill !== "boolean"
+  )
+    throw new TypeError("injectInvokedSkill must be a boolean");
+  if (
+    params.userDisplayContent !== undefined &&
+    params.userDisplayContent !== null
+  ) {
+    const content = params.userDisplayContent;
+    requireObject(content, "userDisplayContent");
+    assertOnlyKeys(
+      content,
+      ["version", "host", "content"],
+      "userDisplayContent",
+    );
+    requireString(content.version, "display content version", { max: 128 });
+    requireString(content.host, "display content host", { max: 128 });
+    validateBoundedJson(content.content, "display content", 0);
+  }
+  if (params.mentionStats !== undefined && params.mentionStats !== null) {
+    const stats = params.mentionStats;
+    requireObject(stats, "mentionStats");
+    assertOnlyKeys(
+      stats,
+      ["count", "contextTypes", "fileExtensions"],
+      "mentionStats",
+    );
+    if (
+      stats.count !== undefined &&
+      (!Number.isInteger(stats.count) || stats.count < 0 || stats.count > 1000)
+    )
+      throw new TypeError("mentionStats.count must be a non-negative integer");
+    for (const key of ["contextTypes", "fileExtensions"]) {
+      if (stats[key] === undefined) continue;
+      requireObject(stats[key], `mentionStats.${key}`);
+      if (Object.keys(stats[key]).length > 64)
+        throw new TypeError(`mentionStats.${key} has too many entries`);
+      for (const [name, count] of Object.entries(stats[key])) {
+        requireString(name, `mentionStats.${key} key`, { max: 128 });
+        if (!Number.isInteger(count) || count < 0 || count > 1000)
+          throw new TypeError(
+            `mentionStats.${key} values must be non-negative integers`,
+          );
+      }
+    }
+  }
+}
+
+function validateConfigWrite(params) {
+  if (
+    !Array.isArray(params.ops) ||
+    params.ops.length < 1 ||
+    params.ops.length > MAX_CONFIG_OPS
+  )
+    throw new TypeError(
+      `ops must contain between 1 and ${MAX_CONFIG_OPS} entries`,
+    );
+  if (params.reason !== undefined)
+    requireString(params.reason, "reason", { max: 256 });
+  if (
+    params.reloadRuntime !== undefined &&
+    typeof params.reloadRuntime !== "boolean"
+  )
+    throw new TypeError("reloadRuntime must be a boolean");
+  for (const op of params.ops) {
+    requireObject(op, "config operation");
+    assertOnlyKeys(
+      op,
+      ["op", "path", "value", "targetLayer"],
+      "config operation",
+    );
+    if (!["set", "remove"].includes(op.op))
+      throw new TypeError("Config operation must be set or remove");
+    const parts = parseConfigPointer(op.path);
+    if (op.op === "set") validateConfigValue(parts, op.value);
+    else if (Object.hasOwn(op, "value") && op.value !== null)
+      throw new TypeError("Remove operations cannot include a value");
+  }
+}
+
+function parseConfigPointer(value) {
+  const pointer = requireString(value, "config path", { max: 1024 });
+  if (!pointer.startsWith("/"))
+    throw new TypeError("Config paths must be JSON pointers");
+  const parts = pointer
+    .slice(1)
+    .split("/")
+    .map((part) => {
+      if (/~(?![01])/.test(part))
+        throw new TypeError("Invalid JSON pointer escape");
+      return part.replace(/~1/g, "/").replace(/~0/g, "~");
+    });
+  const root = parts[0];
+  if (
+    ![
+      "providers",
+      "models",
+      "mcp_servers",
+      "disabled_mcp_server_names",
+      "disabled_skills",
+    ].includes(root)
+  )
+    throw new TypeError(
+      "Config path is outside the editable provider, model, and MCP settings",
+    );
+  const allowedDepth = root.startsWith("disabled_") ? 1 : 3;
+  if (parts.length > allowedDepth)
+    throw new TypeError("Config path is too deeply nested");
+  if (root.startsWith("disabled_") && parts.length !== 1)
+    throw new TypeError("Disabled-name lists can only be replaced as a whole");
+  if (parts.length > 1 && !parts[1])
+    throw new TypeError("Config path contains an empty item name");
+  if (parts.length === 3) {
+    const fields =
+      root === "providers"
+        ? SAFE_PROVIDER_FIELDS
+        : root === "models"
+          ? SAFE_MODEL_FIELDS
+          : SAFE_MCP_FIELDS;
+    if (!fields.has(parts[2]))
+      throw new TypeError(`Config field is not editable: ${parts[2]}`);
+  }
+  return parts;
+}
+
+function validateConfigValue(parts, value) {
+  validateBoundedJson(value, "config value", 0);
+  const [root] = parts;
+  if (root === "providers") {
+    if (parts.length === 1) {
+      if (!Array.isArray(value) || value.length > 64)
+        throw new TypeError("providers must be a list of at most 64 entries");
+      value.forEach(validateProvider);
+    } else if (parts.length === 2) validateProvider(value);
+    else validateProviderField(parts[2], value);
+  } else if (root === "models") {
+    if (parts.length === 1) {
+      if (!isObject(value) || Object.keys(value).length > MAX_CONFIG_ITEMS)
+        throw new TypeError("models must be an object map");
+      for (const [alias, model] of Object.entries(value)) {
+        requireString(alias, "model alias", { max: 128 });
+        validateModel(model);
+      }
+    } else if (parts.length === 2) validateModel(value);
+    else validateModelField(parts[2], value);
+  } else if (root === "mcp_servers") {
+    if (parts.length === 1) {
+      if (!Array.isArray(value) || value.length > 64)
+        throw new TypeError("mcp_servers must be a list of at most 64 entries");
+      value.forEach(validateSafeMcpServer);
+    } else if (parts.length === 2) validateSafeMcpServer(value);
+    else validateSafeMcpField(parts[2], value);
+  } else {
+    if (!Array.isArray(value) || value.length > MAX_CONFIG_ITEMS)
+      throw new TypeError(
+        `${root} must be a list of at most ${MAX_CONFIG_ITEMS} names`,
+      );
+    for (const entry of value)
+      requireString(entry, `${root} item`, { max: 256 });
+  }
+}
+
+function validateProvider(value) {
+  requireObject(value, "provider config");
+  for (const key of Object.keys(value))
+    if (!SAFE_PROVIDER_FIELDS.has(key))
+      throw new TypeError(`Provider field is not editable: ${key}`);
+  for (const key of Object.keys(value)) validateProviderField(key, value[key]);
+}
+
+function validateProviderField(key, value) {
+  if (!SAFE_PROVIDER_FIELDS.has(key))
+    throw new TypeError(`Provider field is not editable: ${key}`);
+  if (key === "emits_finish_reason") {
+    if (typeof value !== "boolean")
+      throw new TypeError(`${key} must be a boolean`);
+  } else if (key === "api_base") {
+    validateApiBase(value);
+  } else if (key === "api_key_env_var") {
+    requireString(value, key, { min: 0, max: 256 });
+    if (value && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(value))
+      throw new TypeError(
+        "api_key_env_var must be an environment variable name",
+      );
+  } else if (key === "backend" && typeof value === "string") {
+    requireString(value, key, { max: 64 });
+  } else {
+    requireString(value, key, { min: 0, max: 1024 });
+  }
+}
+
+function validateApiBase(value) {
+  const raw = requireString(value, "api_base", { max: 2048 });
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new TypeError("api_base must be an HTTP(S) URL");
+  }
+  const loopback = ["127.0.0.1", "localhost", "::1"].includes(
+    url.hostname.toLowerCase(),
+  );
+  if (
+    !["https:", "http:"].includes(url.protocol) ||
+    (url.protocol === "http:" && !loopback) ||
+    url.username ||
+    url.password
+  )
+    throw new TypeError(
+      "api_base must use HTTPS (HTTP is allowed only for loopback endpoints)",
+    );
+}
+
+function validateModel(value) {
+  requireObject(value, "model config");
+  for (const key of Object.keys(value))
+    if (!SAFE_MODEL_FIELDS.has(key))
+      throw new TypeError(`Model field is not editable: ${key}`);
+  for (const [key, fieldValue] of Object.entries(value))
+    validateModelField(key, fieldValue);
+}
+
+function validateModelField(key, value) {
+  if (!SAFE_MODEL_FIELDS.has(key))
+    throw new TypeError(`Model field is not editable: ${key}`);
+  if (["name", "provider", "alias", "display_name", "thinking"].includes(key)) {
+    requireString(value, key, { min: 0, max: 512 });
+  } else if (key === "supports_images") {
+    if (typeof value !== "boolean")
+      throw new TypeError(`${key} must be a boolean`);
+  } else if (key === "thinking_levels") {
+    if (!Array.isArray(value) || value.length > 16)
+      throw new TypeError("thinking_levels must be a list");
+    for (const level of value)
+      requireString(level, "thinking level", { max: 64 });
+  } else if (
+    [
+      "max_output_tokens",
+      "max_context_length",
+      "auto_compact_threshold",
+    ].includes(key)
+  ) {
+    if (!Number.isInteger(value) || !Number.isFinite(value) || value < 1)
+      throw new TypeError(`${key} must be a positive integer`);
+  } else if (
+    [
+      "temperature",
+      "top_p",
+      "input_price",
+      "output_price",
+      "cached_input_price",
+    ].includes(key)
+  ) {
+    if (
+      value !== null &&
+      (typeof value !== "number" ||
+        !Number.isFinite(value) ||
+        value < 0 ||
+        (key === "top_p" && value > 1))
+    )
+      throw new TypeError(`${key} must be a valid finite number`);
+  }
+}
+
+function validateSafeMcpServer(value) {
+  requireObject(value, "MCP server config");
+  for (const key of Object.keys(value))
+    if (!SAFE_MCP_FIELDS.has(key))
+      throw new TypeError(`MCP config field is not editable here: ${key}`);
+  if (
+    value.transport !== undefined &&
+    !["http", "streamable-http"].includes(value.transport)
+  )
+    throw new TypeError(
+      "Only HTTP MCP transports are supported by the safe config editor",
+    );
+  if (value.url !== undefined) validateHttpsEndpoint(value.url, "MCP URL");
+  for (const key of ["name", "prompt"])
+    if (value[key] !== undefined)
+      requireString(value[key], key, { min: 0, max: 2000 });
+  for (const key of ["startup_timeout_sec", "tool_timeout_sec"])
+    if (
+      value[key] !== undefined &&
+      (typeof value[key] !== "number" ||
+        !Number.isFinite(value[key]) ||
+        value[key] <= 0 ||
+        value[key] > 600)
+    )
+      throw new TypeError(`${key} must be between 0 and 600`);
+  for (const key of ["sampling_enabled", "disabled"])
+    if (value[key] !== undefined && typeof value[key] !== "boolean")
+      throw new TypeError(`${key} must be a boolean`);
+  if (value.disabled_tools !== undefined) {
+    if (
+      !Array.isArray(value.disabled_tools) ||
+      value.disabled_tools.length > MAX_CONFIG_ITEMS
+    )
+      throw new TypeError("disabled_tools must be a list of at most 128 names");
+    value.disabled_tools.forEach((name) =>
+      requireString(name, "disabled tool", { max: 256 }),
     );
   }
-  for (const block of message) {
-    requireObject(block, "message block");
-    assertOnlyKeys(block, ["type", "text"], "message block");
-    if (block.type !== "text")
-      throw new TypeError("Only text message blocks are supported");
-    requireString(block.text, "message text", { max: 100_000 });
+}
+
+function validateSafeMcpField(key, value) {
+  if (!SAFE_MCP_FIELDS.has(key))
+    throw new TypeError(`MCP config field is not editable here: ${key}`);
+  const partial = { [key]: value };
+  validateSafeMcpServer(partial);
+}
+
+function validateHttpsEndpoint(value, label) {
+  const raw = requireString(value, label, { max: 2048 });
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new TypeError(`${label} must be a valid URL`);
+  }
+  if (url.protocol !== "https:" || url.username || url.password)
+    throw new TypeError(
+      `${label} must use HTTPS and cannot contain credentials`,
+    );
+}
+
+function validateMcpAdd(params) {
+  validateHttpsEndpoint(params.url, "MCP URL");
+  if (params.name !== undefined && params.name !== null)
+    requireString(params.name, "name", { max: 256 });
+  if (params.transport !== undefined && params.transport !== "streamable-http")
+    throw new TypeError(
+      "Only streamable HTTP MCP servers can be added from this app",
+    );
+  if (params.allowInsecureHttp === true)
+    throw new TypeError("Insecure HTTP MCP endpoints are disabled");
+  if (params.scopes !== undefined) {
+    if (!Array.isArray(params.scopes) || params.scopes.length > 32)
+      throw new TypeError("scopes must contain at most 32 entries");
+    for (const scope of params.scopes)
+      requireString(scope, "OAuth scope", { max: 256 });
+  }
+}
+
+function validateBoundedJson(value, label, depth) {
+  if (depth > MAX_CONFIG_DEPTH)
+    throw new TypeError(`${label} is nested too deeply`);
+  if (value === null || typeof value === "boolean") return;
+  if (typeof value === "string") {
+    requireString(value, label, { min: 0, max: 10_000 });
+    return;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value))
+      throw new TypeError(`${label} contains a non-finite number`);
+    return;
+  }
+  if (Array.isArray(value)) {
+    if (value.length > MAX_CONFIG_ITEMS)
+      throw new TypeError(`${label} has too many array items`);
+    for (const item of value) validateBoundedJson(item, label, depth + 1);
+    return;
+  }
+  requireObject(value, label);
+  const keys = Object.keys(value);
+  if (keys.length > 64) throw new TypeError(`${label} has too many fields`);
+  for (const [key, child] of Object.entries(value)) {
+    if (
+      /(?:secret|password|token|authorization|headers|api_key)(?!_env_var)/i.test(
+        key,
+      )
+    )
+      throw new TypeError(`${label} cannot contain credential fields`);
+    validateBoundedJson(child, label, depth + 1);
   }
 }
 

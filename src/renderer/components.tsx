@@ -79,7 +79,10 @@ export function Entry({ entry }: { entry: HistoryEntry }) {
     );
   if (entry.type === "reasoning")
     return (
-      <details className="reasoning">
+      <details
+        className="reasoning"
+        open={entry.generationStatus === "in_progress" ? true : undefined}
+      >
         <summary>
           <Workflow size={14} /> Thinking
         </summary>
@@ -90,7 +93,7 @@ export function Entry({ entry }: { entry: HistoryEntry }) {
     );
   if (entry.type === "effect")
     return (
-      <details className="effect">
+      <details className={`effect effect-${entry.state?.status || "pending"}`}>
         <summary>
           {entry.state?.status === "running" ||
           entry.state?.status === "pending" ? (
@@ -103,15 +106,45 @@ export function Entry({ entry }: { entry: HistoryEntry }) {
           <span>
             {entry.title || entry.detail?.toolName || "Agent operation"}
           </span>
-          <small>{entry.state?.status}</small>
+          <small className="effect-status">{entry.state?.status}</small>
         </summary>
-        <pre>{pretty(entry.detail?.input || entry.detail || {})}</pre>
-        {entry.state?.outputText && (
-          <pre className="tool-output">{entry.state.outputText}</pre>
-        )}
-        {entry.state?.error && (
-          <p className="error-text">{entry.state.error.message}</p>
-        )}
+        <div className="effect-body">
+          <div className="effect-section">
+            <h4>Parameters</h4>
+            <dl className="effect-parameters">
+              {Object.entries(entry.detail?.input || {}).map(
+                ([name, value]) => (
+                  <div key={name}>
+                    <dt>{name}</dt>
+                    <dd>
+                      <pre>{pretty(value)}</pre>
+                    </dd>
+                  </div>
+                ),
+              )}
+            </dl>
+          </div>
+          {(entry.state?.outputText || entry.state?.output) && (
+            <div className="effect-section">
+              <h4>Result</h4>
+              <pre className="tool-output">
+                {entry.state.outputText || pretty(entry.state.output)}
+              </pre>
+            </div>
+          )}
+          {entry.state?.error && (
+            <div className="effect-section effect-error">
+              <h4>Error</h4>
+              <p>{entry.state.error.message}</p>
+            </div>
+          )}
+          {entry.state?.durationMs > 0 && (
+            <small className="effect-duration">
+              {(Number(entry.state?.durationMs) / 1000).toFixed(1)} seconds ·
+              reported by Vibe
+            </small>
+          )}
+        </div>
       </details>
     );
   if (entry.type === "callback")

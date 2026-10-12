@@ -21,5 +21,12 @@ contextBridge.exposeInMainWorld(
     onEvent: (listener) => subscribe("vibe:event", listener),
     onStatus: (listener) => subscribe("vibe:status", listener),
     openExternal: (url) => ipcRenderer.invoke("vibe:open-external", url),
+    git: (method, params) => ipcRenderer.invoke("vibe:git", method, params),
+    setWindowTheme: (theme) => ipcRenderer.invoke("vibe:window-theme", theme),
+    auth: (action, attemptId) =>
+      ipcRenderer.invoke("vibe:auth", action, attemptId),
+    openAuthLink: (id) => ipcRenderer.invoke("vibe:open-auth-link", id),
+    openQuotaDashboard: (kind) =>
+      ipcRenderer.invoke("vibe:quota-dashboard", kind),
   }),
 );

@@ -21,6 +21,37 @@ test("rejects prototype mutation and impossible streaming patches", () => {
   );
   assert.equal(({} as any).polluted, undefined);
 });
+
+test("reported cumulative stats update token usage without clearing a missing measurement", () => {
+  const state: any = {
+    eventId: 0,
+    session: {
+      id: "session",
+      tokenUsage: { inputTokens: 10, outputTokens: 2, totalTokens: 12 },
+    },
+    history: [],
+    activeCallbacks: [],
+    childSessions: [],
+  };
+  const next = reduceEvent(state, {
+    method: "session/statsUpdated",
+    params: {
+      sessionId: "session",
+      eventId: 1,
+      stats: { sessionPromptTokens: 120, sessionCompletionTokens: 12 },
+    },
+  });
+  assert.deepEqual(next.session.tokenUsage, {
+    inputTokens: 120,
+    outputTokens: 12,
+    totalTokens: 132,
+  });
+  const noUsage = reduceEvent(next, {
+    method: "session/statsUpdated",
+    params: { sessionId: "session", eventId: 2, stats: {} },
+  });
+  assert.deepEqual(noUsage.session.tokenUsage, next.session.tokenUsage);
+});
 test("duplicate events are ignored and gaps require a canonical reload", () => {
   const state: any = {
     eventId: 3,

@@ -3,6 +3,8 @@ export type Json =
 export interface Preferences {
   theme: "light" | "dark" | "system";
   recentProjects: string[];
+  mascot?: boolean;
+  motion?: boolean;
 }
 export interface Status {
   state: "connecting" | "ready" | "disconnected" | "error";
@@ -15,6 +17,9 @@ export interface RpcEvent {
 export interface ContentBlock {
   type: string;
   text?: string;
+  uri?: string;
+  mediaType?: string;
+  altText?: string;
 }
 export interface Turn {
   id: string;
@@ -35,6 +40,13 @@ export interface Session {
   status?: { type: string };
   updatedAt: number;
   pinnedAt?: number | null;
+  archivedAt?: number | null;
+  leaseHolder?: { processId?: number | null } | null;
+  contextUsage?: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+  } | null;
   model?: string | null;
   agent?: Agent | null;
   worktree?: { branch: string; name: string; path: string } | null;
@@ -46,6 +58,7 @@ export interface Session {
 }
 export interface HistoryEntry {
   id: string;
+  turnId?: string | null;
   type: string;
   sessionId: string;
   generationStatus: string;
@@ -70,14 +83,37 @@ export interface SessionState {
     name: string;
     status: { type: string };
     agentType: string;
+    tokenUsage?: {
+      inputTokens: number;
+      outputTokens: number;
+      totalTokens: number;
+    };
+    contextUsage?: {
+      inputTokens: number;
+      outputTokens: number;
+      totalTokens: number;
+    } | null;
+    createdAt?: number;
+    updatedAt?: number;
   }[];
-  turnQueue?: { items: { id: string }[]; paused: boolean };
+  turnQueue?: {
+    items: {
+      id: string;
+      entries?: { role: string; content: ContentBlock[] }[];
+    }[];
+    paused: boolean;
+  };
   retrying?: { detail: string } | null;
 }
 export interface Runtime {
   config: {
-    activeModel: { alias: string; displayName: string; thinking: string };
-    models: { alias: string; displayName: string }[];
+    activeModel: {
+      alias: string;
+      displayName: string;
+      thinking: string;
+      [key: string]: any;
+    };
+    models: { alias: string; displayName: string; [key: string]: any }[];
   };
   activeAgent: Agent;
   agents: Agent[];
@@ -108,6 +144,14 @@ export interface VibeBridge {
   onEvent(listener: (event: RpcEvent) => void): () => void;
   onStatus(listener: (status: Status) => void): () => void;
   openExternal(url: string): Promise<void>;
+  git<T = any>(method: string, params: Record<string, unknown>): Promise<T>;
+  setWindowTheme(theme: "light" | "dark"): Promise<void>;
+  auth<T = any>(
+    action: "begin" | "status" | "complete" | "cancel",
+    attemptId?: string,
+  ): Promise<T>;
+  openAuthLink(id: string): Promise<void>;
+  openQuotaDashboard(kind: "vibe" | "usage" | "limits"): Promise<void>;
 }
 declare global {
   interface Window {

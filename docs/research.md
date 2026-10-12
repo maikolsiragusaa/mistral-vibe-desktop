@@ -126,3 +126,52 @@ Local smoke evidence from the canonical 2.26.1 runtime: initialization, setup st
 - [Le Chat → Vibe rename](https://help.mistral.ai/en/articles/682992-le-chat-is-now-vibe)
 - [VibeZ source and product architecture](https://github.com/lecomputeur/vibez/tree/v3.0.5)
 - [VibeZ 3.0.5 downloads](https://github.com/lecomputeur/vibez/releases/tag/v3.0.5)
+
+## Expansion audit: 0.2
+
+The second audit retains Vibe 2.26.1 at the same pinned commit. Public methods
+are checked against the actual Windows Unified runtime before they become UI
+claims. The [capability matrix](capabilities.md) separates shipped desktop
+paths, missing Unified dispatch and future client work.
+
+- **Models:** `runtime/read.config.models` is the selectable inventory;
+  `config/effective/read.config.models` is keyed by alias. Provider, API ID and
+  context metadata supplement the picker without inserting unavailable models.
+  Official GLM 5.3 documentation describes general availability; GLM 5.2's
+  retirement is scheduled for 31 October 2026. Large 4 Preview is described in
+  Mistral's current model documentation. These announcements do not establish
+  an account's access. [GLM 5.3](https://docs.mistral.ai/models/zai-glm-5-3),
+  [model catalogue](https://docs.mistral.ai/models).
+- **Auth:** the public app-server still has no browser PKCE RPC. The desktop
+  helper invokes `vibe.acp.auth.AcpAuthController`, preserving upstream PKCE,
+  persistence and cancellation. The bridge is bundled and hashed in build
+  metadata. [Controller source](https://github.com/mistralai/mistral-vibe/blob/4ae5c5955da8e761318916bdb1a7f46f0b50c7d0/vibe/acp/auth.py).
+- **Sessions:** independent root sessions require independent owned app-server
+  connections. Native queue, pin/archive, lease events and parent-authorized
+  child history are public methods. The desktop pool caps attachments at four.
+- **MCP/config:** catalogue read, refresh, source/tool toggles, OAuth login and
+  HTTP-source add/remove are dispatched. A project declaration can shadow a
+  toggle persisted in the default config layer. The client verifies readback
+  and writes the source's disabled leaf in its writable layer when needed,
+  then refreshes discovery. Plugin-owned sources remain managed by the plugin.
+- **Diagnostics:** `stats/read` and `diagnostics/list`, like `review/*`, return
+  `method_not_found` in this Unified adapter. `runtime/read` supplies public
+  stats, issues and context-window metadata, so diagnostics use that snapshot.
+  Cumulative tokens and latest measured context are different values. Cached
+  tokens, duration and speed can remain zero defaults without a measurement.
+- **Quota:** `account/read` supplies identity/status metadata, not numerical
+  remaining allowances. Fixed official pages open in an isolated desktop
+  browser. Session counters never stand in for an account balance.
+  [Usage limits](https://docs.mistral.ai/admin/billing-usage/usage-limits),
+  [organization usage metrics](https://docs.mistral.ai/admin/admin-api/usage-metrics).
+- **Brand:** the official kit supplies the visual reference and usage rules.
+  The distributed signal mark and Ember companion are original. The UI adopts
+  warm surfaces, orange emphasis and pixel geometry without shipping an
+  altered official emblem. [Mistral brand kit](https://mistral.ai/brand/).
+
+The previous audit's browser-auth deferral is resolved by the minimal upstream
+controller bridge. Registry skill import, worktree creation/removal and Git
+hunk staging remain client backlog items; their upstream existence is not a
+claim of completed desktop support. The [validation record](validation.md)
+identifies the real engine paths exercised and the account-dependent paths
+that remain unverified.

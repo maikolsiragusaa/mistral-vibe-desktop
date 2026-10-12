@@ -178,6 +178,7 @@ datas += _harness_datas
 '@
 $specText = Replace-ExactlyOnce $specText 'datas += _harness_datas' $builtinPluginData.TrimEnd() "built-in plugin resources collection"
 $specText = Replace-ExactlyOnce $specText '["vibe/app_server/entrypoint.py"]' '[os.path.join(SPECPATH, "entrypoint.py")]' "installed-wheel entry point"
+$specText = Replace-ExactlyOnce $specText 'pathex=[]' 'pathex=[SPECPATH]' "project launcher import path"
 $specText = Replace-ExactlyOnce $specText '["pyinstaller/runtime_hook_truststore.py"]' '[os.path.join(SPECPATH, "upstream", "pyinstaller", "runtime_hook_truststore.py")]' "truststore runtime hook"
 $specText = Replace-ExactlyOnce $specText 'excludes=[]' 'excludes=["textual_speedups"]' "optional Textual speedups exclusion"
 $specPath = Join-Path $buildRoot "build.spec"
@@ -185,19 +186,29 @@ $specPath = Join-Path $buildRoot "build.spec"
 
 $entryPointPath = Join-Path $buildRoot "entrypoint.py"
 $entryPoint = @'
-"""Project-owned launcher for the installed upstream app-server package."""
+"""Project-owned launcher for the official Vibe server and desktop auth bridge."""
 
 import os
+import sys
 
 os.environ["TEXTUAL_SPEEDUPS"] = "0"
 
-from vibe.app_server.stdio import main
-
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--desktop-auth"]:
+        from auth_sidecar import main as auth_main
+
+        raise SystemExit(auth_main())
+    from vibe.app_server.stdio import main
+
     main()
 '@
 [System.IO.File]::WriteAllText($entryPointPath, $entryPoint, [System.Text.UTF8Encoding]::new($false))
+$authSidecarPath = Join-Path $PSScriptRoot "auth-sidecar.py"
+if (-not (Test-Path -LiteralPath $authSidecarPath -PathType Leaf)) {
+    throw "The desktop browser-auth sidecar source was not found: $authSidecarPath"
+}
+Copy-Item -LiteralPath $authSidecarPath -Destination (Join-Path $buildRoot "auth_sidecar.py")
 
 $env:PYINSTALLER_CONFIG_DIR = Join-Path $buildRoot "pyinstaller-cache"
 $env:UV_CACHE_DIR = Join-Path $repoRoot ".runtime\uv-cache"
@@ -368,6 +379,12 @@ $buildMetadata = [ordered]@{
     requirementsSha256 = $requirementsHash
     pythonVersion = $pythonInfo.python
     architecture = "windows-x64"
+    desktopAuthBridge = [ordered]@{
+        controller = "vibe.acp.auth.AcpAuthController"
+        source = "scripts/auth-sidecar.py"
+        sourceSha256 = (Get-FileHash -LiteralPath $authSidecarPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        launcherSha256 = (Get-FileHash -LiteralPath $entryPointPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
     includedBuiltinPluginResources = @(
         "vibe/plugins/builtins/vibe/plugin.json",
         "vibe/plugins/builtins/vibe/skills/**/*.md"

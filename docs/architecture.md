@@ -3,10 +3,18 @@
 ## Decision
 
 Build a Windows desktop delivery surface for the official Mistral Vibe app
-server. Ship one Electron client and one unmodified upstream backend. The
+server. Ship one Electron client and the unmodified upstream engine. The
 desktop owns windows, navigation, keyboard interaction and rendering. Vibe owns
 every operation that changes agent execution, workspace trust or durable
 session state.
+
+The client keeps one owned app-server process per attached root session,
+with a four-connection cap. Switching to an attached tab reads its canonical
+state without stopping the other turn. The pool routes session RPCs to their
+owner and allows read-only child history through the parent owner. Pin/archive
+are host metadata operations, authorized only for listed sessions in selected
+roots. Lease subscriptions identify other clients without exposing unrelated
+session IDs.
 
 The feasibility gate passed on Windows on 12 October 2026: the published
 `mistral-vibe==2.26.1` wheel installs with Python 3.12 and its native Unified
@@ -47,6 +55,34 @@ It does not persist prompts, tool results, API keys or a second session index.
 Credentials are passed directly to `setup/store-credential`; upstream keyring
 storage and its documented fallback retain custody.
 
+Drafts and attachment previews live in session-keyed memory. They survive an
+owned backend restart in the running desktop, but are not a second durable
+conversation store. Public history and the native turn queue stay with Vibe.
+
+Management controls open in a modal window over the retained conversation.
+Git and management code are separate chunks loaded on demand. The original
+pixel companion uses finite animations and obeys both the app motion preference
+and the system reduced-motion preference.
+
+Git inspection and explicit stage/unstage/commit use a small local Git service,
+separate from harness review. Paths are canonicalized under the selected
+repository; traversal, `.git` access and escaping links are rejected. Output
+and diff sizes are bounded. PR integration uses installed `gh` authentication,
+and creation requires an explicit action plus an already published,
+synchronized branch. The desktop never pushes automatically.
+
+Browser sign-in uses a project-owned JSON-lines bridge to upstream
+`AcpAuthController.authenticate("browser-auth-delegated", ...)`. The controller
+owns PKCE, delegated-flow state and credential persistence. The helper returns
+whitelisted status/persistence metadata; the main process validates and opens
+the official sign-in URL. The frozen executable has a `--desktop-auth` launcher
+mode. This adapter does not start an ACP server.
+
+Quota pages use a separate sandboxed BrowserWindow with no preload, no Node
+integration and no trusted desktop IPC. Only fixed Mistral HTTPS entry points
+can be requested. The isolated persistent cookie partition belongs to those
+pages; account credentials and page contents are never read by the renderer.
+
 ## Alternatives
 
 | Option                     | Decision                           | Reason                                                                                                                          |
@@ -85,9 +121,10 @@ for `review/state` and `review/turnDiff`; the Changes panel presents this engine
 limitation. The client retains the public integration and waits for upstream
 support instead of introducing another file-review engine.
 
-Browser sign-in currently lives in the upstream CLI rather than an app-server
-RPC. The first client supports the public API-key setup method and shared CLI
-credentials. It does not invent an account authentication protocol.
+Browser sign-in lives in the upstream authentication controller rather than an
+app-server RPC. The desktop reuses that controller through the minimal owned
+helper described above. API-key setup and existing Vibe credentials continue
+to use the public setup methods.
 
 ## Process and security ownership
 

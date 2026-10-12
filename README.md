@@ -3,8 +3,8 @@
 **Your local projects. Mistral's coding engine. One focused Windows workspace.**
 
 Vibe Desktop is a free, open-source community client for Mistral Vibe. Open a
-local project, start or continue a conversation, follow the agent's work and
-follow file operations in a desktop workspace. The official Vibe app server runs
+local project, continue a conversation, inspect a diff and follow the agent's
+work in a focused desktop workspace. The official Vibe app server runs
 the agent, tools, permissions, session history, MCP and skills.
 
 This is an independent project, unaffiliated with Mistral AI.
@@ -13,19 +13,27 @@ This is an independent project, unaffiliated with Mistral AI.
 
 ## What works today
 
-- A real Windows x64 desktop app with light, dark and system themes.
-- Local project navigation and Vibe's persisted session catalogue.
+- An integrated Windows titlebar, warm pixel geometry and light/dark themes.
+- Up to four attached sessions, persistent history, search, pin and archive.
 - Streaming Markdown, tool effects, approvals and user questions.
-- Prompt steering, interruption and resume through the official engine.
-- Agent and model selection from the configured Vibe runtime.
-- Project shell and visible subagent activity.
+- Prompt queue, steering, interruption, attachments and draft recovery.
+- Searchable models, provider metadata and supported reasoning levels.
+- Git diffs, staging, commits, history, worktrees and GitHub PR links.
+- A management window for MCP, skills, plugins, providers and diagnostics.
+- Subagent identity, task, output and read-only session history.
+- Context partitions, token totals, reasoning controls and official quota pages.
+- Browser sign-in through Vibe's delegated authentication controller.
 - A packaged upstream backend, reproducible build scripts and Windows CI.
 
-The first version targets local Vibe Code. Hosted Work/Chat, account browser
-sign-in and cloud teleport remain upstream workflows. The client shares Vibe's
-configuration and credentials rather than creating a separate account system.
-Vibe 2.26.1's default Unified Harness does not expose the review API yet. The
-Changes panel reports this explicitly; file operations remain visible in Activity.
+The client uses Vibe's configuration and credential store. The model picker
+shows the runtime's allowed inventory, including configured GLM models and
+custom providers. Selection does not claim account eligibility; successful use
+is recorded only after a completed model response.
+
+Vibe 2.26.1's Unified Harness does not dispatch `review/*`. The Git workspace
+provides ordinary repository diffs alongside the engine's tool history.
+Numeric account quotas remain on Mistral's official dashboards; session token
+counters are shown separately. See [capabilities and limits](docs/capabilities.md).
 
 ## Run from source
 
@@ -42,7 +50,8 @@ npm start
 ```
 
 Open **Settings** to check the engine connection. Use credentials already
-configured with Vibe, or paste a Mistral API key and select **Save with Vibe**.
+configured with Vibe, choose **Continue in browser**, or paste a Mistral API key
+and select **Save with Vibe**.
 Vibe stores the key through its credential service; the desktop retains none.
 Model use follows your Mistral plan or provider's billing.
 
@@ -50,6 +59,10 @@ Open a folder with **Open project** or **Ctrl+O**. When Vibe finds project
 configuration, review its trust request. Describe the outcome in the composer,
 then press Enter or Ctrl+Enter. Shift+Enter adds a new line; Escape interrupts
 an active turn. Select a saved conversation in the project rail to continue it.
+Use **Ctrl+K** for commands. **Resources** opens a management window; it keeps
+the conversation mounted underneath. The context ring beside the composer
+opens the measured input/output partition and token counters. Open **Quota &
+usage** in Resources for account status and official Mistral dashboards.
 
 ## Build a Windows package
 
@@ -104,4 +117,5 @@ npm run test:ui
 
 Apache-2.0. See [LICENSE](LICENSE), [NOTICE](NOTICE) and
 [third-party notices](THIRD_PARTY_NOTICES.md). Mistral's name and brand assets
-remain its property. The stepped signal mark is original to this project.
+remain its property. The stepped signal mark and Ember pixel companion are
+original to this project.

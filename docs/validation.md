@@ -1,8 +1,10 @@
 # Windows validation
 
-This record describes the checks executed on 12 October 2026. The client runs
-the published Mistral Vibe engine; the local model fixture is a test endpoint,
-not a production backend or a simulated agent.
+This record covers Vibe Desktop 0.2 on 12 October 2026. All model responses used
+for automated checks come from loopback fixtures. The official Vibe engine runs
+the real tools, approvals, queues, storage and subagents against disposable
+projects. Fixture token counts test the integration; they are not hosted-model
+measurements.
 
 ## Build inputs
 
@@ -17,73 +19,73 @@ not a production backend or a simulated agent.
 | Upstream commit     | `4ae5c5955da8e761318916bdb1a7f46f0b50c7d0` |
 | PyInstaller         | 6.20.0                                     |
 
-The frozen executable SHA-256 is
-`18ab843da50997265173a3885121f5772caf8c2aa16a0860ea15bc34215c28e9`.
-Its `build-metadata.json` records the upstream source and hashes of the official
-build entrypoint and hooks. Each support file is checked against the pinned
-commit's Git blob and its SHA-256 over canonical UTF-8/LF bytes. Local Windows
-checkouts and raw GitHub downloads therefore use the same verified input;
-unexpected encoding and altered contents are rejected. The packaged `licenses/`
-directory contains the runtime inventory and matching license texts.
-The complete Python environment is pinned in `requirements-backend.txt`; its
-hash is recorded in the build metadata. The build adds the built-in plugin
-manifest and skills that the upstream 2.26.1 PyInstaller spec omits. The probe
-requires those resources and rejects the resulting discovery error if they
-are missing.
+The complete Python environment is pinned in `requirements-backend.txt`.
+`build-metadata.json` records that file's hash, canonical UTF-8/LF hashes of the
+pinned upstream build inputs and the minimal desktop authentication helper.
+Matching runtime notices are bundled under `licenses/`. Built-in plugin
+manifests and skills omitted by the upstream spec are included and probed.
 
-## Checks
+The current frozen app-server SHA-256 is
+`75c8e8df8d483742051fa1ebf1d0d49cdc7602b362e8b90654b190f2f93a8a81`.
+The executable includes the `--desktop-auth` controller bridge. Its isolated
+status probe passed without making a hosted request; a real browser account
+exchange remains an account-dependent check.
 
-`npm run build` passed TypeScript and production bundling. `npm test` passed all
-24 transport, renderer and backend tests, with no skipped tests. The real
-Electron integration test passed against both the installed and frozen
-backend (26.4 seconds for the latest frozen run). `npm audit`
-reported zero vulnerabilities in the locked npm dependency tree.
-The same desktop workflow also passed against `out/win-unpacked/Vibe Desktop.exe`
-and its bundled backend in 22.5 seconds, using disposable presentation and Vibe
-profiles. This verifies the packaged executable as well as source launch.
+## Automated checks
 
-The protocol probe ran both the installed wheel and the frozen executable. It
-requires the expected server identity/version, successful setup, session listing
-and trust inspection, a valid session, a ready Unified Runtime and a successful
-session stop. It used an isolated Vibe home and made zero model calls. A separate
-probe without provider credentials returned Vibe's typed `unauthorized` error.
-Upstream emits a `CancelledError` diagnostic when stdio closes after the successful
-stop response; this did not prevent a clean probe result.
+The 56-test suite passes with no skips. It covers transport framing, callbacks,
+public projection, Windows path aliases and executable lookup, selected-root
+authorization, independent process owners, lease/metadata scope, GLM/custom
+model identity, credential boundaries, browser-auth lifecycle and safe output,
+Git operations and runtime measurements. Real-engine tests exercise streaming,
+interruption, resume and an approved file write against loopback endpoints.
+A 650-file dirty repository verifies the 500-path status cap; diff output is
+bounded to 512 KiB and command output to 4 MiB.
 
-The automated suite covers fragmented UTF-8, frame limits, request correlation,
-callback receipt acknowledgement, process failure, project authorization and
-credential ownership. Real engine integration exercises streaming, interruption,
-stop/restart/resume and a second turn against a loopback provider. Callback
-approval, denial and question payloads have wire-contract tests. An additional
-real-engine test requests `file_system.write_file` in Ask mode, requires the
-authentic approval callback, then verifies the exact file and completed
-`file_write` effect. Hosted model requests have not been exercised.
+TypeScript and production bundling pass. The initial renderer JavaScript is
+approximately 430 kB (130 kB gzip); Git and workspace management load as separate
+chunks. Secondary panel errors stay inside their boundary and leave the session
+available. `npm audit` reports zero vulnerabilities in the complete locked tree.
 
-That same test verifies that the default Unified Harness returns
-`method_not_found` for `review/state` and `review/turnDiff`. These procedures
-exist in the legacy Python handler, while the current default adapter does not
-dispatch them. The Changes panel presents their availability explicitly.
-Windows fixture paths are canonicalized to support the runner's `RUNNER~1`
-temporary-directory alias. A junction regression check verifies that the
-picker authorizes the canonical target while raw aliases remain rejected.
-Windows startup also pins `NODEFAULTCURRENTDIRECTORYINEXEPATH=1` in the backend
-child's environment. This prevents a GitPython environment mutation from racing
-with Vibe's shell environment snapshot; regression checks cover case-insensitive
-key handling and preservation of the parent environment.
-The original exception was reproduced with concurrent GitPython patches and
-Vibe snapshots. The same stress check completed without errors with the flag
-held for the child process's lifetime.
+The two Electron scenarios preserve the original regression coverage and add:
 
-The renderer tests cover incremental patches, duplicate and missing events,
-partial snapshots, context handoff, multi-select questions and custom answers.
-The desktop test launches the actual Electron window with the frozen backend,
-checks sandbox/context-isolation/Node settings, and exercises project trust,
-streaming, session switching, resume and shell output. It terminates only that
-window's owned app-server process, reconnects, resumes saved history and verifies
-that the unsent draft survived. The minimum window size is checked for horizontal
-overflow.
+- Native titlebar overlay, theme, minimize/maximize/restore and minimum width.
+- Both sidebar edges: drag to resize, collapse and reopen; left button toggle.
+- Command palette, focus, IME input and session draft preservation.
+- Configured Mistral/GLM/custom model discovery, reasoning selection and switching.
+- Real concurrent session turns, native queue removal, pin/archive and restore.
+- MCP HTTP discovery, tool/source controls, project-layer persistence and refresh,
+  HTTP-source add/remove, installed-skill toggles and plugin reload.
+- Runtime token/context diagnostics, reasoning controls and compact MCP status.
+- Isolated quota-window permissions and fixed URLs. The test intercepts HTTPS
+  navigation, so it checks the window boundary without reading a real account.
+- Actual approved file creation, dirty-file attribution, diffs, stage/unstage,
+  commit, history, read-only worktrees and a useful missing-remote state.
+- Unified programmatic child spawn/wait, observed activity and child history.
+- Image and text attachment selection, preview/removal, clipboard/drop and send;
+  unsupported input validation and owned-backend crash/reconnect.
 
-Reproduce the checks after [installing the source dependencies](../README.md):
+The executable probe confirms server identity/version, setup, trust, session
+creation, a ready Unified runtime, packaged built-in resources and session stop,
+with zero model calls. The credential-free probe returns typed `unauthorized`.
+Upstream can emit `CancelledError` as stdio closes after a successful stop;
+this is recorded without treating it as a failed conformance result.
+
+## Performance evidence
+
+The UI scenario samples the main process and every recursive descendant,
+including renderer, GPU, utilities, console host and Python/native runtime.
+It records startup-to-ready, combined working sets and idle CPU over the actual
+elapsed sample interval. Working-set sums can count shared pages more than once;
+CPU is expressed as a percentage of one core. Local measurements are observations,
+not a benchmark promise. JSON records live in [performance](performance/).
+
+The long-session fixture includes 650 source functions and repeated turns.
+Messages use `content-visibility` with intrinsic layout space; the client does
+not claim full transcript virtualization. Git and diff limits keep large
+repository output bounded. The pool cap limits simultaneous backend ownership.
+
+## Reproduce
 
 ```powershell
 npm run build
@@ -97,40 +99,57 @@ $env:VIBE_TEST_DESKTOP = "$PWD/out/win-unpacked/Vibe Desktop.exe"
 npm run test:ui
 ```
 
-The first Electron launch was blocked by this host's additional Codex process
-sandbox. A user-authorized read/execute ACL was added only to Electron's public
-binary directory. The GUI tests run outside that host restriction and explicitly
-assert that Electron's renderer sandbox remains enabled. No `--no-sandbox` flag
-or disabled web security is used.
+The renderer stays sandboxed with context isolation and no Node integration.
+An earlier host restriction required a user-authorized read/execute ACL only on
+Electron's public binary directory. No disabled renderer sandbox is used.
 
 ## Interface evidence
 
-These are actual desktop captures produced by the UI test. The session screenshot
-contains the labelled local fixture response; it is not evidence of a hosted
-Mistral request. The [design record](design.md) links the earlier layout preview
-and the Mistral references used to evaluate the implemented interface.
+Screenshots are generated from the real Electron window with disposable profiles
+and labelled fixture responses. Finite screenshot animations are fast-forwarded
+to their completed state. They include both themes, narrow layout, management,
+MCP status, models, reasoning, context, approval, Git, subagents and attachments.
 
-| Light                                           | Dark                                          |
-| ----------------------------------------------- | --------------------------------------------- |
-| ![Light desktop](screenshots/desktop-light.png) | ![Dark desktop](screenshots/desktop-dark.png) |
+| Management                                               | Context                                                                 |
+| -------------------------------------------------------- | ----------------------------------------------------------------------- |
+| ![MCP management](screenshots/desktop-expansion-mcp.png) | ![Context partitions](screenshots/desktop-expansion-context-tokens.png) |
 
-![Real session using the local model fixture](screenshots/desktop-session.png)
+![Local Git diff](screenshots/desktop-expansion-git-diff.png)
 
-## Distribution
+## Distribution and remaining checks
 
-The Windows package includes Electron and the frozen upstream Python/native
-runtime. Python and uv are build tools, not end-user installation requirements.
-The NSIS build is local and unsigned; no release is published by the build
-workflow. CI uploads the installer, its SHA-256, screenshots and backend
-manifests as a build artifact.
+The unsigned NSIS installer includes Electron and the official Python/native
+runtime. Installed users do not need Python or uv. CI repeats tests before and
+after packaging, then uploads the installer, SHA-256, screenshots, process-tree
+measurements and backend manifests. No public release or merge is performed.
 
-Local artifact: `Vibe-Desktop-0.1.0-x64-Setup.exe`, 164,646,584 bytes.
-SHA-256: `1b4c26de5cbea75681fe0cb7427a5aee5488ee30cca14e5de054ad38f5e3df02`.
-`Get-AuthenticodeSignature` reports `NotSigned`. The matching checksum is saved
-in `out/SHA256SUMS.txt`; CI generates its own checksum for its artifact.
+A clean Windows 11 install/uninstall, DPI/snap/Mica behavior on that host, hosted
+Mistral/GLM entitlement and model quality, live browser sign-in, connector OAuth,
+registry network browsing and account quota rendering remain external checks.
+PR creation has Git-service contract tests; no remote PR is created by the
+product test. The repository PR used to review this change is separate.
 
-Interactive installation and uninstall on a clean Windows 11 machine remain to
-be executed. This Windows 10 host establishes runtime and packaging feasibility,
-not that clean-machine result. Hosted Mistral credentials, account entitlement
-and paid model conformance also remain untested. The next increments and their
-acceptance criteria are recorded in the [backlog](backlog.md).
+The [capability matrix](capabilities.md) and [backlog](backlog.md) identify
+remaining desktop work and the methods missing from Unified dispatch.
+
+## Executed desktop gates
+
+The original scenario passed with the frozen backend in 25.4 seconds; the
+expanded scenario passed in 1.5 minutes. Both ran the actual Electron window,
+with real Unified tools and disposable loopback endpoints. The frozen startup
+sample reached ready in 2,677 ms, used 503.7 MiB of combined working sets across
+six owned processes and observed 0.29% of one CPU core over 5.44 seconds. These
+measurements include shared pages and the installed runtime process tree.
+
+The packaged expansion scenario passed in 1.5 minutes, including graphical
+provider addition, API-base leaf editing, model addition and a final check that
+all owned processes exited. The packaged baseline scenario passed in 20.9
+seconds. The latest packaged process sample reached ready in 4,488 ms and
+recorded 513.8 MiB across six processes, with 0.58% of one core over 5.42 seconds.
+This is a new-process launch with normal host caches, not a cold-OS benchmark.
+
+Local installer: `Vibe-Desktop-0.2.0-x64-Setup.exe`, 164,822,459 bytes.
+SHA-256: `8ead009a01aa3dfbaba1da2a32b205be2d6423462e3203a3d7f9fdac0ad4ebe6`.
+Authenticode status: `NotSigned`. `out/SHA256SUMS.txt` records the checksum.
+After the final NSIS build, the app executable, `app.asar` and frozen backend
+hashes exactly matched the package exercised by the expanded UI scenario.

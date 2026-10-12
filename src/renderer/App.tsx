@@ -1,5 +1,21 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { Mark, Entry, CallbackCard } from "./components";
+import { PixelCompanion, type CompanionState } from "./PixelCompanion";
+import { ModelPicker } from "./components/ModelPicker";
+import { ContextUsage } from "./ContextUsage";
+import { PanelBoundary } from "./components/PanelBoundary";
+import { McpStatus } from "./components/McpStatus";
+import { ReasoningPicker } from "./components/ReasoningPicker";
+import "./desktop.css";
 import {
   ArrowUp,
   ArrowUpRight,
@@ -18,6 +34,8 @@ import {
   Moon,
   PanelRightClose,
   PanelRightOpen,
+  PanelLeftClose,
+  PanelLeftOpen,
   Plus,
   RefreshCw,
   Settings2,
@@ -27,6 +45,11 @@ import {
   Terminal,
   Workflow,
   X,
+  Search,
+  Pin,
+  Archive,
+  Paperclip,
+  Layers,
 } from "lucide-react";
 import type {
   HistoryEntry,
@@ -41,6 +64,14 @@ import type {
 import { reduceEvent } from "./projection.ts";
 
 const bridge = window.vibe;
+const GitWorkspace = lazy(() =>
+  import("./GitWorkspace").then((module) => ({ default: module.GitWorkspace })),
+);
+const ResourceWindow = lazy(() =>
+  import("./ResourceWindow").then((module) => ({
+    default: module.ResourceWindow,
+  })),
+);
 const basename = (path: string) =>
   path
     .replace(/[\\/]+$/, "")
@@ -55,6 +86,14 @@ const text = (entry: HistoryEntry) =>
     .map((block) => block.text)
     .join("\n\n") ||
   "";
+type Attachment = {
+  id: string;
+  name: string;
+  mime: string;
+  kind: "image" | "text";
+  content: string;
+  size: number;
+};
 
 export function App() {
   const [status, setStatus] = useState<Status>({ state: "connecting" });
@@ -66,16 +105,59 @@ export function App() {
   });
   const [project, setProject] = useState("");
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [showArchived, setShowArchived] = useState(false);
+  const includeArchived = useRef(false);
+  const gitBaselines = useRef(new Map<string, string[]>());
+  const sessionCache = useRef(new Map<string, SessionState>());
+  const sessionDrafts = useRef(new Map<string, string>());
+  const promptHistory = useRef(new Map<string, string[]>());
+  const [sessionQuery, setSessionQuery] = useState("");
+  const [view, setView] = useState<"chat" | "git">("chat");
+  const [resourcesOpen, setResourcesOpen] = useState(false);
+  const [palette, setPalette] = useState(false);
+  const [paletteQuery, setPaletteQuery] = useState("");
+  const [queueMode, setQueueMode] = useState(false);
+  const [configView, setConfigView] = useState<any>(null);
+  const [effectiveConfig, setEffectiveConfig] = useState<any>(null);
+  const [authState, setAuthState] = useState<any>(null);
+  const [authLinks, setAuthLinks] = useState<any[]>([]);
+  const [verifiedModels, setVerifiedModels] = useState<string[]>([]);
+  const [pendingModel, setPendingModel] = useState<{
+    alias: string;
+    reasoning?: string;
+  } | null>(null);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [, setBackgroundRevision] = useState(0);
+  const [childTranscript, setChildTranscript] = useState<SessionState | null>(
+    null,
+  );
+  const attachmentDrafts = useRef(new Map<string, Attachment[]>());
+  const fileInput = useRef<HTMLInputElement>(null);
   const [state, setState] = useState<SessionState | null>(null);
   const stateRef = useRef<SessionState | null>(null);
   const resyncing = useRef(false);
   const bufferedEvents = useRef<RpcEvent[]>([]);
+  const backgroundResync = useRef(new Map<string, RpcEvent[]>());
   const [runtime, setRuntime] = useState<Runtime | null>(null);
+  const resourceSessionId = state?.session.id;
+  const acceptResourceRuntime = useCallback(
+    (next: Runtime) => {
+      if (stateRef.current?.session.id === resourceSessionId) setRuntime(next);
+    },
+    [resourceSessionId],
+  );
+  const acceptResourceError = useCallback(
+    (message: string) => {
+      if (stateRef.current?.session.id === resourceSessionId) setError(message);
+    },
+    [resourceSessionId],
+  );
   const [pendingCallbacks, setPendingCallbacks] = useState<HistoryEntry[]>([]);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [working, setWorking] = useState(false);
+  const actionInFlight = useRef(false);
   const [settings, setSettings] = useState(false);
   const [key, setKey] = useState("");
   const [mode, setMode] = useState("");
@@ -83,6 +165,111 @@ export function App() {
     "activity",
   );
   const [panelOpen, setPanelOpen] = useState(true);
+  const [railOpen, setRailOpen] = useState(true);
+  const [railWidth, setRailWidth] = useState(238);
+  const [panelWidth, setPanelWidth] = useState(290);
+  const [draggingSidebar, setDraggingSidebar] = useState(false);
+  const sidebarDrag = useRef<{
+    side: "left" | "right";
+    startX: number;
+    startWidth: number;
+  } | null>(null);
+  const dragSidebar = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = sidebarDrag.current;
+    if (!drag) return;
+    const delta = event.clientX - drag.startX;
+    const raw = drag.startWidth + (drag.side === "left" ? delta : -delta);
+    const other =
+      drag.side === "left"
+        ? panelOpen
+          ? panelWidth
+          : 0
+        : railOpen
+          ? railWidth
+          : 0;
+    const width = Math.max(
+      180,
+      Math.min(raw, 440, window.innerWidth - other - 380),
+    );
+    if (drag.side === "left") {
+      setRailOpen(raw >= 112);
+      if (raw >= 112) setRailWidth(width);
+    } else {
+      setPanelOpen(raw >= 112);
+      if (raw >= 112) setPanelWidth(width);
+    }
+  };
+  const sidebarHandle = (side: "left" | "right") => (
+    <div
+      className={`sidebar-resizer sidebar-resizer-${side}`}
+      role="separator"
+      aria-label={
+        side === "left" ? "Resize project sidebar" : "Resize context sidebar"
+      }
+      aria-orientation="vertical"
+      tabIndex={0}
+      aria-valuemin={0}
+      aria-valuemax={440}
+      aria-valuenow={
+        side === "left"
+          ? railOpen
+            ? railWidth
+            : 0
+          : panelOpen
+            ? panelWidth
+            : 0
+      }
+      onPointerDown={(event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        sidebarDrag.current = {
+          side,
+          startX: event.clientX,
+          startWidth:
+            side === "left"
+              ? railOpen
+                ? railWidth
+                : 0
+              : panelOpen
+                ? panelWidth
+                : 0,
+        };
+        setDraggingSidebar(true);
+      }}
+      onPointerMove={dragSidebar}
+      onPointerUp={(event) => {
+        sidebarDrag.current = null;
+        setDraggingSidebar(false);
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }}
+      onLostPointerCapture={() => {
+        sidebarDrag.current = null;
+        setDraggingSidebar(false);
+      }}
+      onDoubleClick={() =>
+        side === "left" ? setRailOpen(!railOpen) : setPanelOpen(!panelOpen)
+      }
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          side === "left" ? setRailOpen(!railOpen) : setPanelOpen(!panelOpen);
+        }
+        if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+        event.preventDefault();
+        const change =
+          (event.key === "ArrowRight" ? 20 : -20) * (side === "left" ? 1 : -1);
+        if (side === "left") {
+          setRailOpen(true);
+          setRailWidth((width) => Math.max(180, Math.min(440, width + change)));
+        } else {
+          setPanelOpen(true);
+          setPanelWidth((width) =>
+            Math.max(180, Math.min(440, width + change)),
+          );
+        }
+      }}
+    />
+  );
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [shellDraft, setShellDraft] = useState("");
   const [review, setReview] = useState<any>({ files: [] });
@@ -96,12 +283,15 @@ export function App() {
   const pendingOpen = useRef<{ cwd: string; sessionId?: string } | null>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
   const settingsModal = useRef<HTMLElement>(null);
+  const commandModal = useRef<HTMLElement>(null);
+  const childModal = useRef<HTMLElement>(null);
   const transcript = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
   const turn = state?.turns?.at(-1);
   const running = turn?.status === "in_progress";
   const lastStatus = turn?.status;
   const adopt = useCallback((next: SessionState | null) => {
+    if (next) sessionCache.current.set(next.session.id, next);
     stateRef.current = next;
     setState(next);
     setPendingCallbacks(next?.activeCallbacks || []);
@@ -119,6 +309,8 @@ export function App() {
     [],
   );
   const protect = async (action: () => Promise<void>) => {
+    if (actionInFlight.current) return;
+    actionInFlight.current = true;
     setError("");
     setWorking(true);
     try {
@@ -126,14 +318,31 @@ export function App() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
+      actionInFlight.current = false;
       setWorking(false);
     }
   };
   const listSessions = useCallback(async () => {
     const result = await request<{ items: Session[] }>("session/list", {
       limit: 100,
+      includeArchived: includeArchived.current,
     });
-    setSessions(result.items || []);
+    let items = result.items || [];
+    try {
+      const leases = await request<{
+        held: { sessionId: string; leaseHolder: Session["leaseHolder"] }[];
+      }>("session/lease/subscribe", {});
+      const holders = new Map(
+        leases.held.map((entry) => [entry.sessionId, entry.leaseHolder]),
+      );
+      items = items.map((session) => ({
+        ...session,
+        leaseHolder: holders.get(session.id) || null,
+      }));
+    } catch {
+      /* Saved sessions remain readable when lease watching is unavailable. */
+    }
+    setSessions(items);
   }, [request]);
   const refreshRuntime = useCallback(
     async (sessionId: string) => {
@@ -142,6 +351,15 @@ export function App() {
       });
       if (stateRef.current?.session.id === sessionId)
         setRuntime(result.runtime);
+      try {
+        const config = await request<any>("config/effective/read", {
+          sessionId,
+        });
+        if (stateRef.current?.session.id === sessionId)
+          setEffectiveConfig(config.config || config);
+      } catch {
+        /* Runtime selection remains available without optional metadata. */
+      }
     },
     [request],
   );
@@ -199,11 +417,22 @@ export function App() {
       return;
     }
     const offStatus = bridge.onStatus((next) => {
+      if (
+        (next as any).sessionId &&
+        (next as any).sessionId !== stateRef.current?.session.id
+      ) {
+        if (["disconnected", "error"].includes(next.state)) {
+          sessionCache.current.delete((next as any).sessionId);
+          setBackgroundRevision((revision) => revision + 1);
+        }
+        return;
+      }
       setStatus(next);
       if (
         (next.state === "disconnected" || next.state === "error") &&
         stateRef.current
       ) {
+        sessionCache.current.delete(stateRef.current.session.id);
         adopt(null);
         setRuntime(null);
         bufferedEvents.current = [];
@@ -213,8 +442,48 @@ export function App() {
       }
     });
     const offEvents = bridge.onEvent((event) => {
+      if (event.method === "session/lease/updated") {
+        setSessions((old) =>
+          old.map((session) =>
+            session.id === event.params.sessionId
+              ? { ...session, leaseHolder: event.params.leaseHolder }
+              : session,
+          ),
+        );
+        return;
+      }
+      if (event.method === "session/lease/ended") {
+        setSessions((old) =>
+          old.map(({ leaseHolder: _holder, ...session }) => session),
+        );
+        return;
+      }
+      if (event.params.authLink) {
+        setAuthLinks((old) =>
+          [
+            ...old.filter((link) => link.id !== event.params.authLink.id),
+            event.params.authLink,
+          ].slice(-10),
+        );
+        return;
+      }
       if (event.method === "callback/call") {
         const callback = event.params.callback;
+        if (callback.sessionId !== stateRef.current?.session.id) {
+          const cached = sessionCache.current.get(callback.sessionId);
+          if (cached)
+            sessionCache.current.set(callback.sessionId, {
+              ...cached,
+              activeCallbacks: [
+                ...cached.activeCallbacks.filter(
+                  (item) => item.callbackId !== callback.callbackId,
+                ),
+                callback,
+              ],
+            });
+          setBackgroundRevision((revision) => revision + 1);
+          return;
+        }
         setPendingCallbacks((previous) => [
           ...previous.filter((item) => item.callbackId !== callback.callbackId),
           callback,
@@ -227,6 +496,49 @@ export function App() {
             event.params.message ||
             "Vibe reported an error.",
         );
+        return;
+      }
+      const eventSessionId =
+        event.params.sessionId || event.params.state?.session?.id;
+      if (eventSessionId && eventSessionId !== stateRef.current?.session.id) {
+        const cached = sessionCache.current.get(eventSessionId);
+        if (cached) {
+          const pending = backgroundResync.current.get(eventSessionId);
+          if (pending) {
+            pending.push(event);
+            return;
+          }
+          try {
+            sessionCache.current.set(
+              eventSessionId,
+              reduceEvent(cached, event),
+            );
+          } catch {
+            const events = [event];
+            backgroundResync.current.set(eventSessionId, events);
+            void request<any>("session/read", { sessionId: eventSessionId })
+              .then((result) => {
+                if (!sessionCache.current.has(eventSessionId)) return;
+                let next = result.state;
+                for (const buffered of events) {
+                  try {
+                    next = reduceEvent(next, buffered);
+                  } catch {
+                    break;
+                  }
+                }
+                const current = sessionCache.current.get(eventSessionId);
+                if (next.eventId >= (current?.eventId || 0))
+                  sessionCache.current.set(eventSessionId, next);
+                setBackgroundRevision((revision) => revision + 1);
+              })
+              .catch(() => {})
+              .finally(() => backgroundResync.current.delete(eventSessionId));
+          }
+        }
+        if (event.method === "turn/completed") void listSessions();
+        if (["turn/started", "turn/completed"].includes(event.method))
+          setBackgroundRevision((revision) => revision + 1);
         return;
       }
       if (!stateRef.current) return;
@@ -262,17 +574,56 @@ export function App() {
 
   useEffect(() => {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const apply = () =>
-      (document.documentElement.dataset.theme =
+    const apply = () => {
+      const theme =
         preferences.theme === "system"
           ? media.matches
             ? "dark"
             : "light"
-          : preferences.theme);
+          : preferences.theme;
+      document.documentElement.dataset.theme = theme;
+      void bridge?.setWindowTheme(theme).catch(() => {});
+    };
     apply();
     media.addEventListener("change", apply);
     return () => media.removeEventListener("change", apply);
   }, [preferences.theme]);
+  useEffect(() => {
+    document.documentElement.dataset.motion =
+      preferences.motion === false ? "off" : "on";
+  }, [preferences.motion]);
+  useEffect(() => {
+    if (state?.session.id) {
+      sessionDrafts.current.set(state.session.id, draft);
+      attachmentDrafts.current.set(state.session.id, attachments);
+    }
+  }, [draft, attachments, state?.session.id]);
+  useEffect(() => {
+    if (!palette || !commandModal.current) return;
+    const modal = commandModal.current;
+    const previous = document.activeElement as HTMLElement | null;
+    modal.querySelector<HTMLInputElement>("input")?.focus();
+    const trap = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return;
+      const elements = Array.from(
+        modal.querySelectorAll<HTMLElement>("input,button:not([disabled])"),
+      );
+      const first = elements[0];
+      const last = elements.at(-1);
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
+    };
+    modal.addEventListener("keydown", trap);
+    return () => {
+      modal.removeEventListener("keydown", trap);
+      if (previous?.isConnected) previous.focus();
+    };
+  }, [palette]);
   useEffect(() => {
     if (!settings || !settingsModal.current) return;
     const modal = settingsModal.current;
@@ -307,12 +658,49 @@ export function App() {
     };
   }, [settings]);
   useEffect(() => {
+    if (!childTranscript || !childModal.current) return;
+    const modal = childModal.current;
+    const previous = document.activeElement as HTMLElement | null;
+    const controls = () => [
+      ...modal.querySelectorAll<HTMLElement>(
+        'button, summary, a[href], [tabindex="0"]',
+      ),
+    ];
+    controls()[0]?.focus();
+    const trap = (event: KeyboardEvent) => {
+      const items = controls();
+      if (event.key === "Tab" && items.length) {
+        if (event.shiftKey && document.activeElement === items[0]) {
+          event.preventDefault();
+          items.at(-1)?.focus();
+        } else if (!event.shiftKey && document.activeElement === items.at(-1)) {
+          event.preventDefault();
+          items[0].focus();
+        }
+      }
+    };
+    modal.addEventListener("keydown", trap);
+    return () => {
+      modal.removeEventListener("keydown", trap);
+      if (previous?.isConnected) previous.focus();
+    };
+  }, [childTranscript?.session.id]);
+  useEffect(() => {
     if (atBottom.current && transcript.current)
       transcript.current.scrollTop = transcript.current.scrollHeight;
   }, [state?.eventId, pendingCallbacks]);
   useEffect(() => {
     if (state && !running && lastStatus) {
       void refreshRuntime(state.session.id).catch(() => {});
+      if (
+        lastStatus === "completed" &&
+        state.history?.some((entry) => entry.role === "assistant")
+      )
+        setVerifiedModels((old) =>
+          runtime?.config.activeModel.alias
+            ? [...new Set([...old, runtime.config.activeModel.alias])]
+            : old,
+        );
       void listSessions().catch(() => {});
       void loadReview(state.session.id);
     }
@@ -335,23 +723,43 @@ export function App() {
     sessionId?: string,
     credentialsAvailable = setup?.hasApiKey,
   ) => {
-    if (running)
-      throw new Error("Stop the current turn before switching sessions.");
     if (status.state !== "ready")
       throw new Error("Connect the Vibe engine first.");
     pendingOpen.current = { cwd, sessionId };
+    if (stateRef.current) {
+      sessionDrafts.current.set(stateRef.current.session.id, draft);
+      attachmentDrafts.current.set(stateRef.current.session.id, attachments);
+    }
     setProject(cwd);
+    setView("chat");
+    if (!gitBaselines.current.has(cwd)) {
+      try {
+        const status = await bridge?.git<any>("status", { projectPath: cwd });
+        if (status)
+          gitBaselines.current.set(
+            cwd,
+            status.files.map((file: any) => file.path),
+          );
+      } catch {
+        /* Git is optional for a selected folder. */
+      }
+    }
+    try {
+      const config = await request<any>("config/read", { cwd });
+      setConfigView(config.config || config);
+    } catch {
+      setConfigView(null);
+    }
     if (!credentialsAvailable) {
       setSettings(true);
       return;
     }
-    if (stateRef.current)
-      await request("session/stop", { sessionId: stateRef.current.session.id });
     adopt(null);
     setRuntime(null);
     setReview({ files: [] });
     setDiff(null);
     setNotice("");
+    setEffectiveConfig(null);
     const trustResult = await request<any>("workspace/trust/status", { cwd });
     setTrust(trustResult);
     const result = await request<{ state: SessionState }>(
@@ -362,6 +770,22 @@ export function App() {
     );
     if (!trustResult.details) pendingOpen.current = null;
     adopt(result.state);
+    if (pendingModel) {
+      await request("config/model/write", {
+        sessionId: result.state.session.id,
+        modelAlias: pendingModel.alias,
+        ...(pendingModel.reasoning
+          ? { reasoningEffort: pendingModel.reasoning }
+          : {}),
+      });
+      setPendingModel(null);
+    }
+    setDraft(
+      sessionDrafts.current.get(result.state.session.id) ||
+        sessionDrafts.current.get(`project:${cwd}`) ||
+        "",
+    );
+    setAttachments(attachmentDrafts.current.get(result.state.session.id) || []);
     await refreshRuntime(result.state.session.id);
     await listSessions();
     request<any>("workspace/git/worktrees/list", { cwd, includeDetails: true })
@@ -388,29 +812,156 @@ export function App() {
       const current = stateRef.current;
       if (
         !current ||
-        !draft.trim() ||
+        (!draft.trim() && !attachments.length) ||
         trust?.details ||
         status.state !== "ready"
       )
         return;
       const prompt = draft;
-      if (running) {
+      const message: any[] = [
+        ...(prompt.trim() ? [{ type: "text", text: prompt }] : []),
+        ...attachments.map((attachment) =>
+          attachment.kind === "image"
+            ? {
+                type: "image",
+                attachment: {
+                  source: { kind: "inline", data: attachment.content },
+                  alias: attachment.name,
+                  mimeType: attachment.mime,
+                },
+              }
+            : {
+                type: "resource",
+                resource: {
+                  kind: "text",
+                  uri: `urn:vibe-desktop:attachment:${attachment.id}`,
+                  mediaType: attachment.mime,
+                  text: attachment.content,
+                },
+              },
+        ),
+      ];
+      if (running && queueMode) {
+        const content = [
+          ...(prompt.trim() ? [{ type: "text", text: prompt }] : []),
+          ...attachments.map((attachment) =>
+            attachment.kind === "image"
+              ? {
+                  type: "image",
+                  uri: `data:${attachment.mime};base64,${attachment.content}`,
+                  mediaType: attachment.mime,
+                  altText: attachment.name,
+                }
+              : {
+                  type: "embedded_resource",
+                  uri: `urn:vibe-desktop:attachment:${attachment.id}`,
+                  mediaType: attachment.mime,
+                  text: attachment.content,
+                },
+          ),
+        ];
+        await request("session/turn/enqueue", {
+          sessionId: current.session.id,
+          entries: [{ role: "user", content }],
+          idempotencyKey: crypto.randomUUID(),
+        });
+        setNotice("Prompt queued by Vibe.");
+      } else if (running) {
         await request("turn/steer", {
           sessionId: current.session.id,
           expectedTurnId: turn!.id,
-          message: [{ type: "text", text: prompt }],
+          message,
           idempotencyKey: crypto.randomUUID(),
         });
       } else {
         await request("turn/start", {
           sessionId: current.session.id,
-          message: [{ type: "text", text: prompt }],
+          message,
           idempotencyKey: crypto.randomUUID(),
         });
       }
-      setDraft("");
+      if (stateRef.current?.session.id === current.session.id) {
+        setDraft("");
+        setAttachments([]);
+      }
+      attachmentDrafts.current.delete(current.session.id);
+      sessionDrafts.current.set(current.session.id, "");
+      promptHistory.current.set(
+        current.session.id,
+        [
+          ...(promptHistory.current.get(current.session.id) || []),
+          prompt,
+        ].slice(-30),
+      );
       setNotice("");
     });
+  const addAttachments = async (files: File[]) => {
+    const attachmentSessionId = stateRef.current?.session.id;
+    setError("");
+    try {
+      if (!state)
+        throw new Error("Open a project session before attaching files.");
+      if (attachments.length + files.length > 6)
+        throw new Error("Attach up to six files per prompt.");
+      if (
+        attachments.reduce((sum, item) => sum + item.size, 0) +
+          files.reduce((sum, file) => sum + file.size, 0) >
+        8 * 1024 * 1024
+      )
+        throw new Error("Attachments must total 8 MiB or less.");
+      const additions: Attachment[] = [];
+      for (const file of files) {
+        const image = ["image/png", "image/jpeg", "image/webp"].includes(
+          file.type,
+        );
+        if (image && runtime?.config.activeModel.supportsImages === false)
+          throw new Error(
+            "The active model does not accept images. Choose an image-capable model.",
+          );
+        if (
+          !image &&
+          !file.type.startsWith("text/") &&
+          file.type !== "application/json" &&
+          !/\.(txt|md|json|csv|log|py|js|jsx|ts|tsx|css|html|yaml|yml|toml|rs|go|java|c|cpp|h)$/i.test(
+            file.name,
+          )
+        )
+          throw new Error(
+            `Unsupported attachment: ${file.name}. Use text files, PNG, JPEG or WebP.`,
+          );
+        if (!image && file.size > 256 * 1024)
+          throw new Error("Text attachments must be 256 KiB or smaller.");
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        let content: string;
+        if (image) {
+          let binary = "";
+          for (let index = 0; index < bytes.length; index += 8192)
+            binary += String.fromCharCode(
+              ...bytes.subarray(index, index + 8192),
+            );
+          content = btoa(binary);
+        } else
+          content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+        additions.push({
+          id: crypto.randomUUID(),
+          name: file.name.replace(/[\\/]/g, "_").slice(0, 240),
+          mime: image ? file.type : "text/plain",
+          kind: image ? "image" : "text",
+          content,
+          size: file.size,
+        });
+      }
+      if (stateRef.current?.session.id === attachmentSessionId)
+        setAttachments((old) => [...old, ...additions]);
+      else if (attachmentSessionId)
+        attachmentDrafts.current.set(attachmentSessionId, [
+          ...(attachmentDrafts.current.get(attachmentSessionId) || []),
+          ...additions,
+        ]);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+    }
+  };
   const interrupt = () =>
     protect(async () => {
       if (state && turn && running)
@@ -421,6 +972,13 @@ export function App() {
     });
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      if (event.isComposing || (event.defaultPrevented && !palette)) return;
+      if (resourcesOpen) return;
+      if (event.ctrlKey && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setPalette((open) => !open);
+        return;
+      }
       if (event.ctrlKey && event.key.toLowerCase() === "o") {
         event.preventDefault();
         if (!working && !settings) void chooseProject();
@@ -428,7 +986,9 @@ export function App() {
         event.preventDefault();
         if (!working && !settings) void send();
       } else if (event.key === "Escape") {
-        if (settings) setSettings(false);
+        if (palette) setPalette(false);
+        else if (childTranscript) setChildTranscript(null);
+        else if (settings) setSettings(false);
         else if (running) void interrupt();
       }
     };
@@ -441,24 +1001,149 @@ export function App() {
     (entry, index, all) =>
       all.findIndex((item) => item.callbackId === entry.callbackId) === index,
   );
+  const companionState: CompanionState =
+    status.state === "error" || status.state === "disconnected"
+      ? "error"
+      : callbacks.length
+        ? "waiting"
+        : running
+          ? operations.some((entry) => entry.state?.status === "running")
+            ? "working"
+            : "thinking"
+          : lastStatus === "completed"
+            ? "completed"
+            : "idle";
+  const modelMetadata =
+    runtime?.config.models.map((model) => {
+      const configuredModels = Array.isArray(effectiveConfig?.models)
+        ? effectiveConfig.models
+        : Object.values(effectiveConfig?.models || {});
+      const configured = configuredModels.find(
+        (item: any) => item.alias === model.alias || item.name === model.name,
+      );
+      return {
+        ...configured,
+        ...model,
+        provider: configured?.provider || model.provider,
+      };
+    }) || [];
+  const commands = [
+    {
+      title: "Open project",
+      detail: "Choose a local folder",
+      action: () => void chooseProject(),
+    },
+    {
+      title: "Show conversation",
+      detail: "Return to the active chat",
+      action: () => setView("chat"),
+    },
+    {
+      title: "Git workspace",
+      detail: "Diff, staging and local commits",
+      action: () => setView("git"),
+    },
+    {
+      title: "Resources",
+      detail: "MCP, skills, providers and diagnostics",
+      action: () => setResourcesOpen(true),
+    },
+    {
+      title: "Choose a model",
+      detail: "Search the configured Vibe inventory",
+      action: () =>
+        document
+          .querySelector<HTMLButtonElement>(".model-picker-trigger")
+          ?.click(),
+    },
+    {
+      title: "Settings",
+      detail: "Access and appearance",
+      action: () => setSettings(true),
+    },
+    ...sessions
+      .filter((session) => session.cwd)
+      .slice(0, 30)
+      .map((session) => ({
+        title: session.title || session.preview || "Untitled session",
+        detail: basename(session.cwd!),
+        action: () => void protect(() => openSession(session.cwd!, session.id)),
+      })),
+  ].filter((command) =>
+    `${command.title} ${command.detail}`
+      .toLowerCase()
+      .includes(paletteQuery.toLowerCase()),
+  );
   const isDark =
     preferences.theme === "dark" ||
     (preferences.theme === "system" &&
       window.matchMedia("(prefers-color-scheme: dark)").matches);
+  const liveOperation = [...operations]
+    .reverse()
+    .find((entry) => ["running", "pending"].includes(entry.state?.status));
+  const isResponding = state?.history?.some(
+    (entry) =>
+      entry.type === "message" &&
+      entry.role === "assistant" &&
+      entry.generationStatus === "in_progress",
+  );
   const renderStatus =
     status.state === "ready"
-      ? running
-        ? "Working"
-        : callbacks.length
-          ? "Waiting for you"
+      ? callbacks.length
+        ? "Waiting for you"
+        : running
+          ? liveOperation?.detail?.display?.statusText ||
+            liveOperation?.title ||
+            (isResponding ? "Responding" : "Thinking")
           : "Ready"
       : status.state === "connecting"
         ? "Connecting"
         : "Disconnected";
 
   return (
-    <div className={`app ${panelOpen ? "with-panel" : ""}`}>
-      <aside className="rail">
+    <div
+      className={`app ${panelOpen ? "with-panel" : ""} ${draggingSidebar ? "is-resizing" : ""}`}
+      style={
+        {
+          "--left-sidebar-width": `${railOpen ? railWidth : 0}px`,
+          "--right-sidebar-width": `${panelOpen ? panelWidth : 0}px`,
+        } as CSSProperties
+      }
+    >
+      <div className="desktop-titlebar">
+        <div className="titlebar-safe">
+          <span className="titlebar-brand">
+            <Mark />
+            Vibe Desktop
+          </span>
+          <button
+            className="icon-button sidebar-toggle"
+            aria-label={
+              railOpen ? "Collapse project sidebar" : "Expand project sidebar"
+            }
+            aria-expanded={railOpen}
+            onClick={() => setRailOpen((open) => !open)}
+          >
+            {railOpen ? (
+              <PanelLeftClose size={15} />
+            ) : (
+              <PanelLeftOpen size={15} />
+            )}
+          </button>
+          <span className="titlebar-project">
+            {project ? basename(project) : "Local workspace"}
+          </span>
+          <McpStatus
+            runtime={runtime}
+            onManage={() => setResourcesOpen(true)}
+          />
+          <button className="titlebar-command" onClick={() => setPalette(true)}>
+            <Search size={13} />
+            Search and commands<kbd>Ctrl K</kbd>
+          </button>
+        </div>
+      </div>
+      <aside className="rail" hidden={!railOpen}>
         <div className="brand">
           <Mark />
           <strong>Vibe Desktop</strong>
@@ -469,12 +1154,32 @@ export function App() {
         <button
           className="open-project"
           onClick={() => void chooseProject()}
-          disabled={working || running}
+          disabled={working}
         >
           <Plus size={16} />
           Open project<kbd>Ctrl O</kbd>
         </button>
         <div className="rail-label">Your projects</div>
+        <label className="session-search">
+          <Search size={13} />
+          <input
+            aria-label="Search sessions"
+            placeholder="Find a conversation"
+            value={sessionQuery}
+            onChange={(event) => setSessionQuery(event.target.value)}
+          />
+        </label>
+        <button
+          className="archive-filter"
+          aria-pressed={showArchived}
+          onClick={() => {
+            includeArchived.current = !showArchived;
+            setShowArchived(!showArchived);
+            void listSessions().catch((error) => setError(error.message));
+          }}
+        >
+          <Archive size={12} /> {showArchived ? "Hide archive" : "Show archive"}
+        </button>
         <nav className="projects" aria-label="Projects and sessions">
           {preferences.recentProjects.length === 0 && (
             <p className="rail-empty">Your local work starts here.</p>
@@ -485,7 +1190,7 @@ export function App() {
                 className={`project-row ${project === cwd ? "selected" : ""}`}
                 title={cwd}
                 onClick={() => void protect(() => openSession(cwd))}
-                disabled={working || running}
+                disabled={working}
               >
                 <Folder size={15} />
                 <span>{basename(cwd)}</span>
@@ -495,32 +1200,113 @@ export function App() {
                 .filter(
                   (session) =>
                     session.cwd?.replaceAll("\\", "/").toLowerCase() ===
-                    cwd.replaceAll("\\", "/").toLowerCase(),
+                      cwd.replaceAll("\\", "/").toLowerCase() &&
+                    (!sessionQuery ||
+                      `${session.title || ""} ${session.preview || ""}`
+                        .toLowerCase()
+                        .includes(sessionQuery.toLowerCase())),
+                )
+                .sort(
+                  (a, b) =>
+                    (b.pinnedAt || 0) - (a.pinnedAt || 0) ||
+                    b.updatedAt - a.updatedAt,
                 )
                 .map((session) => (
-                  <button
-                    className={`session-row ${state?.session.id === session.id ? "active" : ""}`}
-                    data-session-id={session.id}
-                    key={session.id}
-                    title={
-                      session.title || session.preview || "Untitled session"
-                    }
-                    onClick={() =>
-                      void protect(() => openSession(cwd, session.id))
-                    }
-                    disabled={working || running}
-                  >
-                    <MessageSquare size={13} />
-                    <span>
-                      {session.title || session.preview || "Untitled session"}
-                    </span>
-                  </button>
+                  <div className="session-shelf-row" key={session.id}>
+                    <button
+                      className={`session-row ${state?.session.id === session.id ? "active" : ""}`}
+                      data-session-id={session.id}
+                      key={session.id}
+                      title={
+                        session.title || session.preview || "Untitled session"
+                      }
+                      onClick={() =>
+                        void protect(() => openSession(cwd, session.id))
+                      }
+                      disabled={
+                        working ||
+                        Boolean(
+                          session.leaseHolder &&
+                          !sessionCache.current.has(session.id),
+                        )
+                      }
+                    >
+                      <MessageSquare size={13} />
+                      <span>
+                        {session.pinnedAt ? <Pin size={10} /> : null}
+                        {session.title || session.preview || "Untitled session"}
+                        {session.leaseHolder &&
+                        !sessionCache.current.has(session.id) ? (
+                          <small>
+                            In use by another client
+                            {session.leaseHolder.processId
+                              ? ` · PID ${session.leaseHolder.processId}`
+                              : ""}
+                          </small>
+                        ) : null}
+                        {session.archivedAt ? <small>Archived</small> : null}
+                      </span>
+                    </button>
+                    <div className="session-shelf-actions">
+                      <button
+                        aria-label={`${session.pinnedAt ? "Unpin" : "Pin"} session ${session.title || "Untitled session"}`}
+                        disabled={working}
+                        onClick={() =>
+                          void protect(async () => {
+                            await request("session/pin", {
+                              sessionId: session.id,
+                              pinned: !session.pinnedAt,
+                            });
+                            await listSessions();
+                          })
+                        }
+                      >
+                        <Pin size={12} />
+                      </button>
+                      <button
+                        aria-label={`${session.archivedAt ? "Restore" : "Archive"} session ${session.title || "Untitled session"}`}
+                        disabled={
+                          working ||
+                          Boolean(
+                            session.leaseHolder &&
+                            !sessionCache.current.has(session.id),
+                          ) ||
+                          sessionCache.current.get(session.id)?.turns?.at(-1)
+                            ?.status === "in_progress"
+                        }
+                        onClick={() =>
+                          void protect(async () => {
+                            await request("session/archive", {
+                              sessionId: session.id,
+                              archived: !session.archivedAt,
+                            });
+                            if (
+                              !session.archivedAt &&
+                              sessionCache.current.has(session.id)
+                            ) {
+                              await request("session/stop", {
+                                sessionId: session.id,
+                              });
+                              sessionCache.current.delete(session.id);
+                              if (stateRef.current?.session.id === session.id) {
+                                adopt(null);
+                                setRuntime(null);
+                              }
+                            }
+                            await listSessions();
+                          })
+                        }
+                      >
+                        <Archive size={12} />
+                      </button>
+                    </div>
+                  </div>
                 ))}
               {project === cwd && (
                 <button
                   className="new-session"
                   onClick={() => void protect(() => openSession(cwd))}
-                  disabled={working || running}
+                  disabled={working}
                 >
                   <Plus size={12} />
                   New session
@@ -540,6 +1326,8 @@ export function App() {
           </div>
         </footer>
       </aside>
+      {sidebarHandle("left")}
+      {sidebarHandle("right")}
       <header className="workspace-header">
         <div>
           <div className="breadcrumbs">
@@ -557,6 +1345,27 @@ export function App() {
           </small>
         </div>
         <div className="header-actions">
+          <button
+            className={`workspace-tab ${view === "chat" ? "selected" : ""}`}
+            onClick={() => setView("chat")}
+          >
+            <MessageSquare size={14} />
+            Chat
+          </button>
+          <button
+            className={`workspace-tab ${view === "git" ? "selected" : ""}`}
+            onClick={() => setView("git")}
+          >
+            <GitBranch size={14} />
+            Git
+          </button>
+          <button
+            className={`workspace-tab ${resourcesOpen ? "selected" : ""}`}
+            onClick={() => setResourcesOpen(true)}
+          >
+            <Layers size={14} />
+            Resources
+          </button>
           <button
             className="icon-button"
             aria-label="Toggle theme"
@@ -593,6 +1402,82 @@ export function App() {
         </div>
       </header>
       <main className="workspace" data-session-id={state?.session.id}>
+        {sessionCache.current.size > 0 && (
+          <nav className="session-tabs" aria-label="Open sessions">
+            {[...sessionCache.current.values()].map((cached) => (
+              <div
+                className={
+                  cached.session.id === state?.session.id ? "active" : ""
+                }
+                key={cached.session.id}
+              >
+                <button
+                  title={cached.session.title || "New session"}
+                  aria-label={`Switch to session ${cached.session.title || cached.session.id}`}
+                  disabled={working}
+                  onClick={() =>
+                    void protect(() =>
+                      openSession(
+                        cached.session.cwd || project,
+                        cached.session.id,
+                      ),
+                    )
+                  }
+                >
+                  <span
+                    className={`status-dot ${cached.turns?.at(-1)?.status === "in_progress" ? "working" : cached.activeCallbacks.length ? "error" : "ready"}`}
+                  />
+                  <span>{cached.session.title || "New session"}</span>
+                </button>
+                <button
+                  aria-label={`Close session ${cached.session.title || "New session"}`}
+                  disabled={working}
+                  onClick={() =>
+                    void protect(async () => {
+                      if (cached.turns?.at(-1)?.status === "in_progress")
+                        throw new Error(
+                          "Stop this turn before closing its session.",
+                        );
+                      await request("session/stop", {
+                        sessionId: cached.session.id,
+                      });
+                      sessionCache.current.delete(cached.session.id);
+                      setBackgroundRevision((revision) => revision + 1);
+                      if (stateRef.current?.session.id === cached.session.id)
+                        adopt(null);
+                    })
+                  }
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ))}
+          </nav>
+        )}
+        {authLinks.length > 0 && (
+          <div className="notice auth-notice" role="status">
+            {authLinks.map((link) => (
+              <div key={link.id}>
+                <span>
+                  {link.name || "MCP"} sign-in · {link.host}
+                </span>
+                <button
+                  className="secondary"
+                  onClick={() =>
+                    void protect(async () => {
+                      await bridge?.openAuthLink(link.id);
+                      setAuthLinks((old) =>
+                        old.filter((item) => item.id !== link.id),
+                      );
+                    })
+                  }
+                >
+                  Open sign-in
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         {error && (
           <div className="error-banner" role="alert">
             <span>{error}</span>
@@ -642,6 +1527,10 @@ export function App() {
                           } else {
                             // Vibe 2.26.1 caches project trust when its config layer starts.
                             // Resume existing history; a new empty session has no journal yet.
+                            await request("session/stop", {
+                              sessionId: current.session.id,
+                            });
+                            sessionCache.current.delete(current.session.id);
                             await openSession(
                               current.session.cwd || project,
                               pendingOpen.current?.sessionId,
@@ -683,277 +1572,528 @@ export function App() {
             </div>
           </section>
         )}
-        <div
-          className="transcript"
-          ref={transcript}
-          onScroll={() => {
-            if (transcript.current)
-              atBottom.current =
-                transcript.current.scrollHeight -
-                  transcript.current.scrollTop -
-                  transcript.current.clientHeight <
-                80;
-          }}
-        >
-          {!state?.history?.length ? (
-            <section className="welcome">
-              <Mark large />
-              <p className="eyebrow">Your code. Your workspace.</p>
-              <h1>
-                {state ? "What are we building?" : "Make room for good code."}
-              </h1>
-              <p>
-                {state
-                  ? "Describe the outcome. Vibe will work in your local project."
-                  : "Your local projects. Mistral's coding engine. One focused workspace."}
-              </p>
-              {!state && (
-                <>
-                  <button
-                    className="primary"
-                    disabled={working || status.state !== "ready"}
-                    onClick={() => void chooseProject()}
-                  >
-                    <FolderOpen size={16} />
-                    Open a project
-                    <ArrowUpRight size={15} />
-                  </button>
-                  <small>Ctrl+O · Open project</small>
-                </>
+        {view === "git" ? (
+          <PanelBoundary name="Git workspace" onClose={() => setView("chat")}>
+            <Suspense
+              fallback={
+                <div className="workspace-loading" role="status">
+                  <LoaderCircle size={18} /> Opening Git workspace…
+                </div>
+              }
+            >
+              <GitWorkspace
+                projectPath={project}
+                initialPaths={gitBaselines.current.get(project)}
+                agentPaths={operations
+                  .filter((entry) => entry.detail?.kind === "file_write")
+                  .map(
+                    (entry) =>
+                      entry.detail?.path ||
+                      entry.detail?.input?.filePath ||
+                      entry.detail?.input?.path ||
+                      entry.detail?.input?.file_path,
+                  )
+                  .filter(Boolean)}
+              />
+            </Suspense>
+          </PanelBoundary>
+        ) : (
+          <>
+            <div
+              className="transcript"
+              ref={transcript}
+              onScroll={() => {
+                if (transcript.current)
+                  atBottom.current =
+                    transcript.current.scrollHeight -
+                      transcript.current.scrollTop -
+                      transcript.current.clientHeight <
+                    80;
+              }}
+            >
+              {!state?.history?.length ? (
+                <section className="welcome">
+                  <div className="welcome-pixel-field" aria-hidden="true">
+                    <i />
+                    <i />
+                    <i />
+                    <i />
+                    <i />
+                    <i />
+                  </div>
+                  {preferences.mascot !== false ? (
+                    <PixelCompanion large state={companionState} />
+                  ) : (
+                    <Mark large />
+                  )}
+                  <p className="eyebrow">Your code. Your workspace.</p>
+                  <h1>
+                    {state
+                      ? "What are we building?"
+                      : "Make room for good code."}
+                  </h1>
+                  <p>
+                    {state
+                      ? "Describe the outcome. Vibe will work in your local project."
+                      : "Your local projects. Mistral's coding engine. One focused workspace."}
+                  </p>
+                  {!state && (
+                    <>
+                      <button
+                        className="primary"
+                        disabled={working || status.state !== "ready"}
+                        onClick={() => void chooseProject()}
+                      >
+                        <FolderOpen size={16} />
+                        Open a project
+                        <ArrowUpRight size={15} />
+                      </button>
+                      <small>Ctrl+O · Open project</small>
+                    </>
+                  )}
+                  <div className="welcome-ideas">
+                    <div>
+                      <Code2 size={18} />
+                      <span>
+                        Build something
+                        <br />
+                        <small>From idea to working code</small>
+                      </span>
+                    </div>
+                    <div>
+                      <Workflow size={18} />
+                      <span>
+                        Explore a codebase
+                        <br />
+                        <small>Find the shape of your project</small>
+                      </span>
+                    </div>
+                    <div>
+                      <GitBranch size={18} />
+                      <span>
+                        Review a change
+                        <br />
+                        <small>See what needs attention</small>
+                      </span>
+                    </div>
+                  </div>
+                  {!state && preferences.recentProjects.length > 0 && (
+                    <div className="recent-project-cards">
+                      {preferences.recentProjects.slice(0, 3).map((cwd) => (
+                        <button
+                          key={cwd}
+                          onClick={() => void protect(() => openSession(cwd))}
+                        >
+                          <Folder size={18} />
+                          <strong>{basename(cwd)}</strong>
+                          <small>{cwd}</small>
+                          <ArrowUpRight size={14} />
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </section>
+              ) : (
+                <div className="conversation">
+                  {state.historyBeforeCursor && (
+                    <button
+                      className="history-more"
+                      disabled={working || running}
+                      onClick={() =>
+                        void protect(async () => {
+                          const sessionId = state.session.id;
+                          const response = await request<any>(
+                            "session/history/list",
+                            {
+                              sessionId: state.session.id,
+                              page: {
+                                cursor: state.historyBeforeCursor,
+                                limit: 100,
+                                direction: "backward",
+                              },
+                            },
+                          );
+                          const current = stateRef.current;
+                          if (current?.session.id !== sessionId) return;
+                          const entries: HistoryEntry[] = [
+                            ...(response.items || response.entries || []),
+                            ...(current.history || []),
+                          ];
+                          adopt({
+                            ...current,
+                            history: entries.filter(
+                              (entry, index) =>
+                                entries.findIndex(
+                                  (item) => item.id === entry.id,
+                                ) === index,
+                            ),
+                            historyBeforeCursor:
+                              response.previousCursor || null,
+                          });
+                        })
+                      }
+                    >
+                      Load earlier messages
+                    </button>
+                  )}
+                  {state.history.map((entry) => (
+                    <Entry key={entry.id} entry={entry} />
+                  ))}
+                </div>
               )}
-              <div className="welcome-ideas">
-                <div>
-                  <Code2 size={18} />
-                  <span>
-                    Build something
-                    <br />
-                    <small>From idea to working code</small>
-                  </span>
-                </div>
-                <div>
-                  <Workflow size={18} />
-                  <span>
-                    Explore a codebase
-                    <br />
-                    <small>Find the shape of your project</small>
-                  </span>
-                </div>
-                <div>
-                  <GitBranch size={18} />
-                  <span>
-                    Review a change
-                    <br />
-                    <small>See what needs attention</small>
-                  </span>
-                </div>
-              </div>
-            </section>
-          ) : (
-            <div className="conversation">
-              {state.historyBeforeCursor && (
-                <button
-                  className="history-more"
-                  disabled={working || running}
-                  onClick={() =>
-                    void protect(async () => {
-                      const sessionId = state.session.id;
-                      const response = await request<any>(
-                        "session/history/list",
-                        {
-                          sessionId: state.session.id,
-                          page: {
-                            cursor: state.historyBeforeCursor,
-                            limit: 100,
-                            direction: "backward",
-                          },
-                        },
-                      );
-                      const current = stateRef.current;
-                      if (current?.session.id !== sessionId) return;
-                      const entries: HistoryEntry[] = [
-                        ...(response.items || response.entries || []),
-                        ...(current.history || []),
-                      ];
-                      adopt({
-                        ...current,
-                        history: entries.filter(
-                          (entry, index) =>
-                            entries.findIndex(
-                              (item) => item.id === entry.id,
-                            ) === index,
-                        ),
-                        historyBeforeCursor: response.previousCursor || null,
-                      });
-                    })
-                  }
-                >
-                  Load earlier messages
-                </button>
-              )}
-              {state.history.map((entry) => (
-                <Entry key={entry.id} entry={entry} />
-              ))}
             </div>
-          )}
-        </div>
-        <div className="composer-area">
-          {callbacks.map((entry) => (
-            <CallbackCard
-              key={entry.callbackId}
-              entry={entry}
-              onAnswer={async (output) => {
-                await request("callback/result", {
-                  sessionId: entry.sessionId,
-                  result: { callbackId: entry.callbackId, output },
-                });
-                setPendingCallbacks((previous) =>
-                  previous.filter(
-                    (item) => item.callbackId !== entry.callbackId,
-                  ),
-                );
-              }}
-            />
-          ))}
-          {notice && (
-            <p className="notice" role="status">
-              {notice}
-            </p>
-          )}
-          {turn?.error && <p className="error-text">{turn.error.message}</p>}
-          <div className={`composer ${running ? "running" : ""}`}>
-            <textarea
-              ref={composer}
-              aria-label="Prompt"
-              placeholder={
-                state
-                  ? "Describe what you want to build, explore or fix…"
-                  : "Open a project to start working…"
-              }
-              value={draft}
-              disabled={
-                !state ||
-                working ||
-                !!trust?.details ||
-                status.state !== "ready"
-              }
-              onChange={(event) => setDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (
-                  event.key === "Enter" &&
-                  !event.shiftKey &&
-                  !event.ctrlKey
-                ) {
-                  event.preventDefault();
-                  void send();
-                }
-              }}
-            />
-            <div className="composer-toolbar">
-              <label className="mode-picker">
-                <ShieldCheck size={13} />
-                <select
-                  aria-label="Agent mode"
-                  value={runtime?.activeAgent.name || mode}
-                  disabled={working || running}
+            <div className="composer-area">
+              {!!state?.turnQueue?.items.length && (
+                <section className="prompt-queue" aria-label="Prompt queue">
+                  <header>
+                    <strong>
+                      {state.turnQueue.items.length} queued prompt
+                      {state.turnQueue.items.length === 1 ? "" : "s"}
+                    </strong>
+                    <span>
+                      {state.turnQueue.paused
+                        ? "Paused"
+                        : "Runs after the active turn"}
+                    </span>
+                    {state.turnQueue.paused && (
+                      <button
+                        className="secondary"
+                        disabled={working}
+                        onClick={() =>
+                          void protect(async () => {
+                            await request("session/turn/queue/resume", {
+                              sessionId: state.session.id,
+                            });
+                            await reload();
+                          })
+                        }
+                      >
+                        Resume queue
+                      </button>
+                    )}
+                  </header>
+                  {state.turnQueue.items.map((item) => (
+                    <div key={item.id}>
+                      <p>
+                        {item.entries
+                          ?.flatMap((entry) =>
+                            entry.content
+                              .filter((block) => block.type === "text")
+                              .map((block) => block.text),
+                          )
+                          .join(" ") || "Queued attachments"}
+                      </p>
+                      <button
+                        className="icon-button"
+                        aria-label={`Remove queued prompt ${item.id}`}
+                        disabled={working}
+                        onClick={() =>
+                          void protect(async () => {
+                            await request("session/turn/queue/remove", {
+                              sessionId: state.session.id,
+                              queueItemId: item.id,
+                            });
+                            await reload();
+                          })
+                        }
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  ))}
+                </section>
+              )}
+              {callbacks.map((entry) => (
+                <CallbackCard
+                  key={entry.callbackId}
+                  entry={entry}
+                  onAnswer={async (output) => {
+                    await request("callback/result", {
+                      sessionId: entry.sessionId,
+                      result: { callbackId: entry.callbackId, output },
+                    });
+                    setPendingCallbacks((previous) =>
+                      previous.filter(
+                        (item) => item.callbackId !== entry.callbackId,
+                      ),
+                    );
+                  }}
+                />
+              ))}
+              {notice && (
+                <p className="notice" role="status">
+                  {notice}
+                </p>
+              )}
+              {turn?.error && (
+                <p className="error-text">{turn.error.message}</p>
+              )}
+              <div className={`composer ${running ? "running" : ""}`}>
+                {attachments.length > 0 && (
+                  <div className="attachment-list">
+                    {attachments.map((attachment) => (
+                      <div className="attachment-chip" key={attachment.id}>
+                        {attachment.kind === "image" && (
+                          <img
+                            src={`data:${attachment.mime};base64,${attachment.content}`}
+                            alt={attachment.name}
+                          />
+                        )}
+                        <span>
+                          {attachment.name}
+                          <small>
+                            {(attachment.size / 1024).toFixed(1)} KiB
+                          </small>
+                        </span>
+                        <button
+                          aria-label={`Remove attachment ${attachment.name}`}
+                          onClick={() =>
+                            setAttachments((old) =>
+                              old.filter((item) => item.id !== attachment.id),
+                            )
+                          }
+                        >
+                          <X size={12} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <input
+                  className="file-input"
+                  ref={fileInput}
+                  type="file"
+                  multiple
+                  aria-label="Attach files"
+                  disabled={!state || working}
+                  accept="image/png,image/jpeg,image/webp,text/*,.md,.json,.py,.js,.ts,.tsx,.rs,.go,.yaml,.toml"
                   onChange={(event) => {
-                    const agentName = event.target.value;
-                    setMode(agentName);
-                    if (state)
-                      void protect(async () => {
+                    void addAttachments(Array.from(event.target.files || []));
+                    event.target.value = "";
+                  }}
+                />
+                <textarea
+                  ref={composer}
+                  aria-label="Prompt"
+                  placeholder={
+                    state
+                      ? "Describe what you want to build, explore or fix…"
+                      : "Open a project to start working…"
+                  }
+                  value={draft}
+                  disabled={
+                    !state ||
+                    working ||
+                    !!trust?.details ||
+                    status.state !== "ready"
+                  }
+                  onChange={(event) => {
+                    setDraft(event.target.value);
+                    if (stateRef.current)
+                      sessionDrafts.current.set(
+                        stateRef.current.session.id,
+                        event.target.value,
+                      );
+                  }}
+                  onPaste={(event) => {
+                    const files = Array.from(event.clipboardData.files);
+                    if (files.length) {
+                      event.preventDefault();
+                      void addAttachments(files);
+                    }
+                  }}
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    void addAttachments(Array.from(event.dataTransfer.files));
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.nativeEvent.isComposing || event.keyCode === 229)
+                      return;
+                    if (event.key === "ArrowUp" && !draft && state) {
+                      const lastPrompt = promptHistory.current
+                        .get(state.session.id)
+                        ?.at(-1);
+                      if (lastPrompt) {
+                        event.preventDefault();
+                        setDraft(lastPrompt);
+                      }
+                      return;
+                    }
+                    if (
+                      event.key === "Enter" &&
+                      !event.shiftKey &&
+                      !event.ctrlKey
+                    ) {
+                      event.preventDefault();
+                      void send();
+                    }
+                  }}
+                />
+                <div className="composer-toolbar">
+                  <button
+                    className="icon-button"
+                    aria-label="Add attachments"
+                    disabled={!state || working || !!trust?.details}
+                    onClick={() => fileInput.current?.click()}
+                  >
+                    <Paperclip size={15} />
+                  </button>
+                  <label className="mode-picker">
+                    <ShieldCheck size={13} />
+                    <select
+                      aria-label="Agent mode"
+                      value={runtime?.activeAgent.name || mode}
+                      disabled={working || running}
+                      onChange={(event) => {
+                        const agentName = event.target.value;
+                        setMode(agentName);
+                        if (state)
+                          void protect(async () => {
+                            const result = await request<any>(
+                              "session/agent/update",
+                              { sessionId: state.session.id, agentName },
+                            );
+                            setRuntime(result.runtime);
+                          });
+                      }}
+                    >
+                      {(
+                        runtime?.agents.filter(
+                          (agent) => agent.agentType !== "subagent",
+                        ) || [
+                          { name: "" },
+                          { name: "ask" },
+                          { name: "plan" },
+                          { name: "accept-edits" },
+                        ]
+                      ).map((agent) => (
+                        <option key={agent.name} value={agent.name}>
+                          {agent.name === ""
+                            ? "Default from Vibe"
+                            : agent.name === "ask"
+                              ? "Ask before tools"
+                              : agent.name === "plan"
+                                ? "Plan"
+                                : agent.name === "accept-edits"
+                                  ? "Accept edits"
+                                  : agent.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <ModelPicker
+                    models={modelMetadata}
+                    activeModel={runtime?.config.activeModel}
+                    activeContextWindow={runtime?.contextWindow}
+                    verifiedAliases={verifiedModels}
+                    disabled={!state || working || running}
+                    onSelect={(modelAlias, reasoningEffort) =>
+                      protect(async () => {
                         const result = await request<any>(
-                          "session/agent/update",
-                          { sessionId: state.session.id, agentName },
+                          "config/model/write",
+                          {
+                            sessionId: state!.session.id,
+                            modelAlias,
+                            ...(reasoningEffort ? { reasoningEffort } : {}),
+                          },
                         );
                         setRuntime(result.runtime);
-                      });
-                  }}
-                >
-                  {(
-                    runtime?.agents.filter(
-                      (agent) => agent.agentType !== "subagent",
-                    ) || [
-                      { name: "" },
-                      { name: "ask" },
-                      { name: "plan" },
-                      { name: "accept-edits" },
-                    ]
-                  ).map((agent) => (
-                    <option key={agent.name} value={agent.name}>
-                      {agent.name === ""
-                        ? "Default from Vibe"
-                        : agent.name === "ask"
-                          ? "Ask before tools"
-                          : agent.name === "plan"
-                            ? "Plan"
-                            : agent.name === "accept-edits"
-                              ? "Accept edits"
-                              : agent.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="model-picker">
-                <select
-                  aria-label="Model"
-                  value={runtime?.config.activeModel.alias || ""}
-                  disabled={!state || working || running}
-                  onChange={(event) =>
-                    void protect(async () => {
-                      const result = await request<any>("config/model/write", {
-                        sessionId: state!.session.id,
-                        modelAlias: event.target.value,
-                      });
-                      setRuntime(result.runtime);
-                    })
-                  }
-                >
-                  {runtime?.config.models.map((model) => (
-                    <option key={model.alias} value={model.alias}>
-                      {model.displayName || model.alias}
-                    </option>
-                  )) || <option value="">Model from Vibe</option>}
-                </select>
-              </label>
-              <span className="composer-spacer" />
-              {running && (
-                <button
-                  className="icon-button stop-button"
-                  aria-label="Stop turn"
-                  title="Stop · Escape"
-                  onClick={() => void interrupt()}
-                >
-                  <Square size={14} />
-                </button>
-              )}
-              <button
-                className="send-button"
-                aria-label={running ? "Steer turn" : "Send prompt"}
-                title={running ? "Steer the current turn" : "Send · Ctrl+Enter"}
-                disabled={
-                  !state || !draft.trim() || working || status.state !== "ready"
-                }
-                onClick={() => void send()}
-              >
-                <ArrowUp size={19} />
-              </button>
+                      })
+                    }
+                  />
+                  <span className="composer-spacer" />
+                  {runtime?.config.activeModel.thinkingLevels?.length > 1 && (
+                    <ReasoningPicker
+                      levels={runtime?.config.activeModel.thinkingLevels || []}
+                      current={runtime?.config.activeModel.thinking || "off"}
+                      disabled={!state || working || running}
+                      onSelect={(reasoningEffort) =>
+                        protect(async () => {
+                          const result = await request<any>(
+                            "config/model/write",
+                            {
+                              sessionId: state!.session.id,
+                              modelAlias: runtime!.config.activeModel.alias,
+                              reasoningEffort,
+                            },
+                          );
+                          setRuntime(result.runtime);
+                        })
+                      }
+                    />
+                  )}
+                  {running && (
+                    <button
+                      className={`queue-toggle ${queueMode ? "selected" : ""}`}
+                      aria-pressed={queueMode}
+                      onClick={() => setQueueMode(!queueMode)}
+                    >
+                      {queueMode ? "Queue next" : "Steer"}
+                    </button>
+                  )}
+                  {running && (
+                    <button
+                      className="icon-button stop-button"
+                      aria-label="Stop turn"
+                      title="Stop · Escape"
+                      onClick={() => void interrupt()}
+                    >
+                      <Square size={14} />
+                    </button>
+                  )}
+                  <button
+                    className="send-button"
+                    aria-label={
+                      running
+                        ? queueMode
+                          ? "Queue prompt"
+                          : "Steer turn"
+                        : "Send prompt"
+                    }
+                    title={
+                      running ? "Steer the current turn" : "Send · Ctrl+Enter"
+                    }
+                    disabled={
+                      !state ||
+                      (!draft.trim() && !attachments.length) ||
+                      working ||
+                      status.state !== "ready"
+                    }
+                    onClick={() => void send()}
+                  >
+                    <ArrowUp size={19} />
+                  </button>
+                </div>
+              </div>
+              <div className="composer-meta">
+                <span>
+                  {preferences.mascot !== false && (
+                    <PixelCompanion state={companionState} />
+                  )}
+                  <span
+                    className={`status-dot ${running ? "working" : status.state}`}
+                  />
+                  <span
+                    className={`activity-status ${running ? "is-active" : ""}`}
+                    role="status"
+                  >
+                    {running && <LoaderCircle size={12} className="spin" />}
+                    {renderStatus}
+                  </span>
+                </span>
+                <ContextUsage runtime={runtime} state={state} />
+                <span>
+                  Enter to send
+                  <span className="meta-divider">·</span>Shift+Enter for a new
+                  line
+                </span>
+              </div>
             </div>
-          </div>
-          <div className="composer-meta">
-            <span>
-              <span
-                className={`status-dot ${running ? "working" : status.state}`}
-              />
-              {renderStatus}
-            </span>
-            <span>
-              {state?.session.tokenUsage
-                ? `${state.session.tokenUsage.totalTokens.toLocaleString()} tokens`
-                : "Powered by Mistral Vibe"}
-              <span className="meta-divider">·</span>Enter to send
-              <span className="meta-divider">·</span>Shift+Enter for a new line
-            </span>
-          </div>
-        </div>
+          </>
+        )}
         {terminalOpen && (
           <section className="shell-panel">
             <header>
@@ -1034,8 +2174,7 @@ export function App() {
                 className={panel === tab ? "active" : ""}
                 onClick={() => {
                   setPanel(tab);
-                  if (tab === "changes" && state)
-                    void protect(() => loadReview(state.session.id));
+                  if (tab === "changes" && state) setView("git");
                 }}
               >
                 {tab === "activity"
@@ -1079,17 +2218,95 @@ export function App() {
               {state?.childSessions.length ? (
                 <>
                   <div className="panel-section-title">Subagents</div>
-                  {state.childSessions.map((child) => (
-                    <div className="activity-row" key={child.id}>
-                      <Workflow size={14} />
-                      <div>
-                        <strong>{child.name}</strong>
-                        <small>
-                          {child.agentType} · {child.status.type}
-                        </small>
+                  {state.childSessions.map((child) => {
+                    const operation = operations.find(
+                      (entry) => entry.detail?.childSessionId === child.id,
+                    );
+                    const task =
+                      operation?.detail?.task ||
+                      operation?.detail?.input?.task ||
+                      operation?.detail?.input?.message ||
+                      operation?.detail?.input?.prompt;
+                    const completion = operations.find(
+                      (entry) =>
+                        entry.detail?.toolName === "subagent.wait" &&
+                        entry.detail?.input?.agentName === child.name,
+                    );
+                    const childOutput =
+                      operation?.state?.outputText ||
+                      completion?.state?.output?.structured_content?.value;
+                    const childElapsed =
+                      operation?.state?.durationMs > 0
+                        ? Number(operation?.state?.durationMs) / 1000
+                        : child.status.type === "idle" &&
+                            child.createdAt &&
+                            child.updatedAt &&
+                            child.updatedAt > child.createdAt
+                          ? (child.updatedAt - child.createdAt) / 1000
+                          : null;
+                    return (
+                      <div className="activity-row" key={child.id}>
+                        <Workflow size={14} />
+                        <div>
+                          <strong>{child.name}</strong>
+                          <small>
+                            {child.agentType} · {child.status.type}
+                          </small>
+                          <small className="break-word">
+                            Session {child.id}
+                          </small>
+                          {task && (
+                            <p className="subagent-task">{String(task)}</p>
+                          )}
+                          {child.tokenUsage && (
+                            <small>
+                              {child.tokenUsage.inputTokens.toLocaleString()}{" "}
+                              input ·{" "}
+                              {child.tokenUsage.outputTokens.toLocaleString()}{" "}
+                              output ·{" "}
+                              {child.tokenUsage.totalTokens.toLocaleString()}{" "}
+                              total tokens
+                            </small>
+                          )}
+                          {childElapsed !== null && (
+                            <small>{childElapsed.toFixed(1)}s elapsed</small>
+                          )}
+                          {childOutput && (
+                            <details>
+                              <summary>Agent output</summary>
+                              <pre>
+                                {typeof childOutput === "string"
+                                  ? childOutput
+                                  : JSON.stringify(childOutput, null, 2)}
+                              </pre>
+                            </details>
+                          )}
+                          {operation?.state?.error && (
+                            <p className="error-text">
+                              {operation.state.error.message}
+                            </p>
+                          )}
+                          <button
+                            className="secondary"
+                            disabled={working}
+                            onClick={() =>
+                              void protect(async () => {
+                                const result = await request<{
+                                  state: SessionState;
+                                }>("session/read", {
+                                  sessionId: child.id,
+                                  history: { limit: 200 },
+                                });
+                                setChildTranscript(result.state);
+                              })
+                            }
+                          >
+                            Inspect subagent
+                          </button>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </>
               ) : null}
               <div className="engine-note">
@@ -1130,12 +2347,14 @@ export function App() {
                   }
                   onClick={() =>
                     void protect(async () => {
+                      const sessionId = state!.session.id;
                       const result = await request<any>("review/turnDiff", {
-                        sessionId: state!.session.id,
+                        sessionId,
                         path: file.path,
                         owner: file.regions[0].owner,
                       });
-                      setDiff({ path: file.path, ...result });
+                      if (stateRef.current?.session.id === sessionId)
+                        setDiff({ path: file.path, ...result });
                     })
                   }
                 >
@@ -1230,6 +2449,151 @@ export function App() {
           )}
         </aside>
       )}
+      {palette && (
+        <div
+          className="modal-backdrop"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setPalette(false);
+          }}
+        >
+          <section
+            ref={commandModal}
+            className="command-palette"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Command palette"
+          >
+            <header>
+              <Search size={17} />
+              <input
+                aria-label="Search commands"
+                placeholder="Search projects, sessions and actions…"
+                value={paletteQuery}
+                onChange={(event) => setPaletteQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && commands[0]) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setPalette(false);
+                    commands[0].action();
+                  }
+                }}
+              />
+              <button
+                aria-label="Close command palette"
+                onClick={() => setPalette(false)}
+              >
+                <X size={16} />
+              </button>
+            </header>
+            <div className="command-results">
+              {commands.length ? (
+                commands.map((command, index) => (
+                  <button
+                    key={`${command.title}-${index}`}
+                    onClick={() => {
+                      setPalette(false);
+                      setPaletteQuery("");
+                      command.action();
+                    }}
+                  >
+                    <span>
+                      {command.title}
+                      <small>{command.detail}</small>
+                    </span>
+                    <ArrowUpRight size={14} />
+                  </button>
+                ))
+              ) : (
+                <p>No matching commands.</p>
+              )}
+            </div>
+            <footer>
+              Enter opens the first result · Tab moves through actions · Escape
+              closes
+            </footer>
+          </section>
+        </div>
+      )}
+      {childTranscript && (
+        <div className="modal-backdrop">
+          <section
+            className="child-transcript-modal"
+            ref={childModal}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Subagent history"
+          >
+            <header>
+              <div>
+                <p className="eyebrow">Subagent history</p>
+                <h2>
+                  {childTranscript.session.title ||
+                    childTranscript.session.agent?.name ||
+                    "Subagent"}
+                </h2>
+              </div>
+              <button
+                className="icon-button"
+                aria-label="Close subagent history"
+                onClick={() => setChildTranscript(null)}
+              >
+                <X size={18} />
+              </button>
+            </header>
+            <dl className="child-session-details">
+              <div>
+                <dt>Session</dt>
+                <dd>{childTranscript.session.id}</dd>
+              </div>
+              <div>
+                <dt>Status</dt>
+                <dd>{childTranscript.session.status?.type || "Unknown"}</dd>
+              </div>
+              <div>
+                <dt>Model</dt>
+                <dd>{childTranscript.session.model || "Inherited"}</dd>
+              </div>
+              <div>
+                <dt>Tokens</dt>
+                <dd>
+                  {childTranscript.session.tokenUsage?.totalTokens.toLocaleString() ??
+                    "Not reported"}
+                </dd>
+              </div>
+            </dl>
+            <div className="conversation">
+              {childTranscript.history?.map((entry) => (
+                <Entry key={entry.id} entry={entry} />
+              ))}
+            </div>
+          </section>
+        </div>
+      )}
+      {resourcesOpen && (
+        <PanelBoundary
+          name="Workspace management"
+          modal
+          onClose={() => setResourcesOpen(false)}
+        >
+          <Suspense
+            fallback={
+              <div className="modal-backdrop" role="status">
+                Opening workspace management…
+              </div>
+            }
+          >
+            <ResourceWindow
+              sessionId={state?.session.id}
+              runtime={runtime}
+              disabled={!state || working || running}
+              onRuntime={acceptResourceRuntime}
+              onError={acceptResourceError}
+              onClose={() => setResourcesOpen(false)}
+            />
+          </Suspense>
+        </PanelBoundary>
+      )}
       {settings && (
         <div className="modal-backdrop">
           <section
@@ -1293,6 +2657,106 @@ export function App() {
             </section>
             <section>
               <h3>Mistral access</h3>
+              <ModelPicker
+                models={
+                  modelMetadata.length
+                    ? modelMetadata
+                    : configView?.models || []
+                }
+                activeModel={
+                  runtime?.config.activeModel || configView?.activeModel
+                }
+                disabled={working || running}
+                onSelect={(modelAlias, reasoningEffort) =>
+                  protect(async () => {
+                    if (state) {
+                      const result = await request<any>("config/model/write", {
+                        sessionId: state.session.id,
+                        modelAlias,
+                        ...(reasoningEffort ? { reasoningEffort } : {}),
+                      });
+                      setRuntime(result.runtime);
+                    } else {
+                      setPendingModel({
+                        alias: modelAlias,
+                        reasoning: reasoningEffort,
+                      });
+                      setNotice(
+                        "This model will be applied when the project session connects.",
+                      );
+                    }
+                  })
+                }
+              />
+              <div className="browser-auth-card">
+                <div>
+                  <strong>Sign in with Mistral</strong>
+                  <p>
+                    Connect your account in the browser. Vibe owns the sign-in
+                    flow and stores the resulting credential.
+                  </p>
+                </div>
+                {authState?.state === "awaiting_browser" ? (
+                  <div className="button-row">
+                    <button
+                      className="primary"
+                      disabled={working}
+                      onClick={() =>
+                        void protect(async () => {
+                          const result = await bridge!.auth(
+                            "complete",
+                            authState.attemptId,
+                          );
+                          setAuthState(result);
+                          const next = await request<Setup>("setup/status");
+                          setSetup(next);
+                          setNotice("Signed in with Mistral.");
+                          if (project) {
+                            setSettings(false);
+                            await openSession(
+                              project,
+                              pendingOpen.current?.sessionId,
+                              next.hasApiKey,
+                            );
+                          }
+                        })
+                      }
+                    >
+                      Complete sign-in
+                    </button>
+                    <button
+                      className="secondary"
+                      onClick={() =>
+                        void protect(async () =>
+                          setAuthState(
+                            await bridge!.auth("cancel", authState.attemptId),
+                          ),
+                        )
+                      }
+                    >
+                      Cancel this sign-in
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    className="primary"
+                    disabled={working || status.state !== "ready"}
+                    onClick={() =>
+                      void protect(async () =>
+                        setAuthState(await bridge!.auth("begin")),
+                      )
+                    }
+                  >
+                    <ArrowUpRight size={14} />
+                    Continue in browser
+                  </button>
+                )}
+                <small>
+                  {authState?.state === "awaiting_browser"
+                    ? "Complete the browser step, then return here. This attempt expires automatically."
+                    : "API usage and account subscriptions follow your Mistral access; this app does not infer your plan."}
+                </small>
+              </div>
               <p>
                 {setup?.hasApiKey
                   ? "Credentials are available to Vibe."
@@ -1383,6 +2847,42 @@ export function App() {
                     <span>{theme}</span>
                   </button>
                 ))}
+              </div>
+              <div className="appearance-switches">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={preferences.mascot !== false}
+                    onChange={(event) =>
+                      void savePreferences({
+                        ...preferences,
+                        mascot: event.target.checked,
+                      })
+                    }
+                  />
+                  <span>
+                    Pixel companion
+                    <small>Ember follows the real session state.</small>
+                  </span>
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={preferences.motion !== false}
+                    onChange={(event) =>
+                      void savePreferences({
+                        ...preferences,
+                        motion: event.target.checked,
+                      })
+                    }
+                  />
+                  <span>
+                    Decorative motion
+                    <small>
+                      System reduced-motion preferences always take priority.
+                    </small>
+                  </span>
+                </label>
               </div>
             </section>
             <section className="about">

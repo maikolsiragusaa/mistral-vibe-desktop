@@ -1,22 +1,24 @@
 # Next increments
 
-The first checkpoint proves the Windows delivery surface and the upstream
-protocol. The next work should deepen the coding workflow while preserving one
-engine and one persistence owner.
+The 0.2 increment adds the Windows titlebar, model picker, management window,
+Git workflow, browser-auth adapter, concurrent sessions and local observability.
+The [capability matrix](capabilities.md) records their exact boundaries.
 
-| Priority | Increment                                                            | Acceptance                                                                                                                   |
-| -------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| 1        | Windows 11 clean-machine installation and uninstall                  | Install the NSIS artifact without Python/uv, open a project, connect and remove the app through normal Windows controls.     |
-| 1        | Hosted Mistral conformance with an explicitly authorized test budget | Verify actual credentials, streaming, tool execution and usage reporting with a Mistral-hosted model.                        |
-| 1        | Unified Harness review and managed-worktree navigation               | Adopt upstream review when the default engine dispatches it; validate dirty, held and unpushed worktree states through Vibe. |
-| 2        | Concurrent sessions                                                  | One owned app-server connection per attached root, clear active-turn status and backend lease conflicts.                     |
-| 2        | Browser sign-in                                                      | Reuse an upstream public auth bridge when available, or justify a small tested adapter to the existing PKCE flow.            |
-| 2        | Subagent transcript navigation                                       | Read public child-session histories and retain upstream control rules.                                                       |
-| 2        | MCP, skills and plugin configuration views                           | Use the official catalog/configuration methods rather than a second extension system.                                        |
-| 3        | Windows notifications and editor handoff                             | Explicit user preferences, no new telemetry sink.                                                                            |
-| 3        | Signed distribution and footprint measurements                       | Configure an authorized signing identity; measure startup, memory and package size before reconsidering the shell.           |
+| Priority | Next increment                             | Acceptance                                                                                                                                              |
+| -------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1        | Windows 11 clean-machine install/uninstall | Use the NSIS artifact without Python/uv, connect, open a project and uninstall through normal Windows controls.                                         |
+| 1        | Hosted account conformance                 | With an explicitly authorized account and model budget, complete browser sign-in and verify Mistral-hosted reasoning, image input and real quota pages. |
+| 1        | Upstream Unified protocol parity           | Dispatch review and diagnostic methods consistently, expose generation-only timing/cached attribution, and settle MCP source-layer mutation behavior.   |
+| 2        | Git hunk staging and stronger attribution  | Stage selected hunks, keep dirty baselines across app restarts and distinguish observed agent touches from exclusive authorship.                        |
+| 2        | Managed worktree navigation                | Navigate held/dirty/unpushed worktrees through upstream APIs with appropriate user decisions.                                                           |
+| 2        | Skill registry lifecycle                   | Import, alias, update and remove skills through existing upstream methods with authenticated end-to-end coverage.                                       |
+| 2        | Local MCP setup                            | Add a structured stdio editor that preserves credential-bearing configuration and validates Windows command forms.                                      |
+| 2        | Durable unsent drafts                      | Define opt-in local retention and recovery without creating a second session journal.                                                                   |
+| 3        | Signed distribution and updates            | Use an authorized signing identity and a reviewed update channel.                                                                                       |
+| 3        | Editor handoff and notifications           | Reuse ACP/editor integrations and explicit notification preferences.                                                                                    |
 
-The client currently supports one attached conversation at a time. It reads
-worktrees and displays subagent activity, while the fuller management interfaces
-above remain open work. Account browser sign-in, cloud teleport, automatic
-updates and a released signed installer are not shipped in this checkpoint.
+Cloud teleport, hosted Work/Chat and automatic releases remain outside the
+current local desktop increment. Work continues on the existing branch and PR;
+no release or main-branch merge is performed by these build checks.
+The exact upstream candidates and acceptance cases are recorded in
+[upstream integration follow-ups](upstream-gaps.md).

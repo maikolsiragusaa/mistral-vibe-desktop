@@ -198,6 +198,16 @@ test("real desktop connects, opens a local project, streams and resumes in both 
     );
     // Kill only the app-server child owned by this disposable desktop instance.
     // Recovery must resume persisted history and retain the unsent draft.
+    // Concurrent tabs now have independent owners. Close the unused empty tab
+    // before this original single-owner crash check.
+    const otherTabs = window.locator(
+      '.session-tabs > div:not(.active) button[aria-label^="Close session"]',
+    );
+    while (await otherTabs.count()) {
+      const count = await otherTabs.count();
+      await otherTabs.first().click();
+      await expect(otherTabs).toHaveCount(count - 1);
+    }
     await window
       .getByLabel("Prompt", { exact: true })
       .fill("Keep this unsent draft.");

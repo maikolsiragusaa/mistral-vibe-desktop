@@ -40,7 +40,8 @@ class Handler(BaseHTTPRequestHandler):
         # Consume request data without retaining, printing, or reflecting it.
         # Only the opt-in tool scenario parses tools/messages in memory so this
         # fixture can exercise Vibe's real approval and file-write path.
-        tool_scenario = os.environ.get("TEST_PROVIDER_TOOL_SCENARIO") == "1"
+        subagent_scenario = os.environ.get("TEST_PROVIDER_SUBAGENT_SCENARIO") == "1"
+        tool_scenario = os.environ.get("TEST_PROVIDER_TOOL_SCENARIO") == "1" or subagent_scenario
         request_body = self.rfile.read(length) if tool_scenario else None
         if request_body is None:
             self.rfile.read(length)
@@ -61,9 +62,18 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(messages, list) or not isinstance(tools, list):
                 self.send_error(400)
                 return
-            if any(
+            last_user_index = max(
+                (index for index, message in enumerate(messages)
+                 if isinstance(message, dict) and message.get("role") == "user"
+                 and "Runtime notification:" not in json.dumps(message.get("content", ""))),
+                default=-1,
+            )
+            last_user_text = json.dumps(messages[last_user_index].get("content", "")) if last_user_index >= 0 else ""
+            if subagent_scenario and "Inspect the local fixture and report a short summary." in last_user_text:
+                response_text = "Local subagent inspected the fixture."
+            elif any(
                 isinstance(message, dict) and message.get("role") == "tool"
-                for message in messages
+                for message in messages[last_user_index + 1:]
             ):
                 response_text = "Fixture file written."
             else:
@@ -74,27 +84,37 @@ class Handler(BaseHTTPRequestHandler):
                         if isinstance(tool, dict)
                         and isinstance(tool.get("function"), dict)
                         and (function := tool["function"]).get("name")
-                        in {"write_file", "file_system.write_file"}
+                        in ({"run_typescript"} if subagent_scenario else {"write_file", "file_system.write_file"})
                     ),
                     None,
                 )
                 target = os.environ.get("TEST_PROVIDER_WRITE_PATH")
-                if not tool_name or not target or not os.path.isabs(target):
+                # Unified exposes programmatic subagents through run_typescript.
+                if subagent_scenario and not tool_name:
+                    response_text = "Local subagent inspected the fixture."
+                elif not tool_name or (not subagent_scenario and (not target or not os.path.isabs(target))):
                     self.send_error(503)
                     return
-                content = "Written by the isolated Vibe fixture.\n"
-                tool_call = {
-                    "index": 0,
-                    "id": "call-vibe-desktop-fixture-write",
-                    "type": "function",
-                    "function": {
-                        "name": tool_name,
-                        "arguments": json.dumps(
-                            {"path": target, "content": content},
-                            separators=(",", ":"),
-                        ),
-                    },
-                }
+                if tool_name:
+                    content = "Written by the isolated Vibe fixture.\n"
+                    tool_call = {
+                        "index": 0,
+                        "id": "call-vibe-desktop-fixture-tool",
+                        "type": "function",
+                        "function": {
+                            "name": tool_name,
+                            "arguments": json.dumps(
+                                {
+                                    "code": "async function main() { "
+                                    "await tools.subagent.spawn({agentName: 'fixture-explorer', "
+                                    "message: 'Inspect the local fixture and report a short summary.'}); "
+                                    "return await tools.subagent.wait({agentName: 'fixture-explorer', "
+                                    "timeoutMs: 30000}); }"
+                                } if subagent_scenario else {"path": target, "content": content},
+                                separators=(",", ":"),
+                            ),
+                        },
+                    }
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
@@ -105,6 +125,8 @@ class Handler(BaseHTTPRequestHandler):
             first_delta["tool_calls"] = [tool_call]
         else:
             first_delta["content"] = response_text
+            if os.environ.get("TEST_PROVIDER_REASONING_SCENARIO") == "1":
+                first_delta["reasoning_content"] = "Local fixture reasoning: inspect the supplied inputs."
         finish_reason = "tool_calls" if tool_call else "stop"
         chunks = [
             {
@@ -124,6 +146,7 @@ class Handler(BaseHTTPRequestHandler):
                 "choices": [
                     {"index": 0, "delta": {}, "finish_reason": finish_reason}
                 ],
+                "usage": {"prompt_tokens": 120, "completion_tokens": 12, "total_tokens": 132},
             },
         ]
         try:

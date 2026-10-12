@@ -89,6 +89,7 @@ jobs:
             out/*Setup.exe
             out/SHA256SUMS.txt
             docs/screenshots/*.png
+            docs/performance/*.json
             .runtime/backend/vibe-app-server/build-metadata.json
             .runtime/backend/vibe-app-server/licenses/manifest.json
           if-no-files-found: error
@@ -101,6 +102,7 @@ jobs:
           name: Vibe-Desktop-Diagnostics-${{ github.sha }}
           path: |
             .runtime/ui-failure.png
+            .runtime/ui-expansion-failure.png
             .runtime/playwright-results/**
           if-no-files-found: ignore
           retention-days: 7

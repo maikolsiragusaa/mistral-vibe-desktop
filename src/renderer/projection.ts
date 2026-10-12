@@ -126,7 +126,18 @@ export function reduceEvent(
       upsert(next.childSessions, p.childSession);
       break;
     case "session/statsUpdated":
-      next.session.tokenUsage = p.stats.tokenUsage;
+      if (
+        Number.isFinite(p.stats?.sessionPromptTokens) &&
+        Number.isFinite(p.stats?.sessionCompletionTokens)
+      ) {
+        next.session.tokenUsage = {
+          inputTokens: p.stats.sessionPromptTokens,
+          outputTokens: p.stats.sessionCompletionTokens,
+          totalTokens:
+            p.stats.sessionPromptTokens + p.stats.sessionCompletionTokens,
+        };
+      } else if (p.stats?.tokenUsage)
+        next.session.tokenUsage = p.stats.tokenUsage;
       break;
   }
   next.activeCallbacks = (next.history ?? []).filter(

@@ -154,6 +154,131 @@ test("project picker canonicalizes a directory junction before session authoriza
   );
 });
 
+test("session history is scoped to selected roots and parent-reported subagents remain read-only", async (t) => {
+  const servers = [];
+  const server = new FakeAppServer();
+  const { backend, selectedProject, otherProject } = await createBackend(t, {
+    spawnProcess: () => {
+      servers.push(server);
+      return server;
+    },
+  });
+
+  assert.deepEqual(await backend.request("session/list", { limit: 10 }), {
+    items: [],
+  });
+  assert.equal(
+    servers.length,
+    0,
+    "an empty project set does not query global sessions",
+  );
+
+  await backend.chooseProject();
+  const selectedSession = {
+    id: "stored-in-selected-project",
+    cwd: selectedProject,
+  };
+  const foreignSession = {
+    id: "stored-in-foreign-project",
+    cwd: otherProject,
+  };
+  server.sessionListItems = [selectedSession, foreignSession];
+
+  const listed = await backend.request("session/list", { limit: 10 });
+  assert.deepEqual(
+    listed.items.map((session) => session.id),
+    [selectedSession.id],
+  );
+  const listRequest = server.requests.find(
+    (request) => request.method === "session/list",
+  );
+  assert.deepEqual(listRequest.params.cwds, [selectedProject]);
+  assert.ok(backend.knownSessions.has(selectedSession.id));
+  assert.equal(backend.knownSessions.has(foreignSession.id), false);
+  await backend.request("session/read", { sessionId: selectedSession.id });
+  await assert.rejects(
+    backend.request("account/read", { sessionId: selectedSession.id }),
+    /does not target the active Vibe session/,
+    "account state is scoped to the current owned session",
+  );
+  const readsBeforeForeign = server.requests.filter(
+    (request) => request.method === "session/read",
+  ).length;
+  await assert.rejects(
+    backend.request("session/read", { sessionId: foreignSession.id }),
+    /Read the project session list/,
+  );
+  assert.equal(
+    server.requests.filter((request) => request.method === "session/read")
+      .length,
+    readsBeforeForeign,
+  );
+
+  const started = await backend.request("session/start", {
+    agentConfig: { cwd: selectedProject },
+  });
+  const parentSessionId = started.state.session.id;
+  const account = await backend.request("account/read", {
+    sessionId: parentSessionId,
+  });
+  assert.deepEqual(account, {
+    account: { status: "ready", plan: { kind: "api", name: "API" } },
+  });
+  const snapshotChildId = "snapshot-reported-subagent";
+  const childWire = {
+    id: snapshotChildId,
+    name: "Researcher",
+    agentType: "explore",
+    status: { type: "idle" },
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  server.sessionReadStates = {
+    [parentSessionId]: {
+      state: {
+        session: started.state.session,
+        childSessions: [childWire],
+      },
+    },
+  };
+  await backend.request("session/read", { sessionId: parentSessionId });
+  assert.equal(
+    backend.knownSessions.get(snapshotChildId)?.readOnlyChild,
+    true,
+    "a parent public-state read authorizes only its reported child for reads",
+  );
+  await backend.request("session/read", { sessionId: snapshotChildId });
+  await assert.rejects(
+    backend.request("runtime/read", { sessionId: snapshotChildId }),
+    /does not target the active Vibe session/,
+  );
+
+  const childSessionId = "parent-reported-subagent";
+  server.notify("session/childSessionUpdated", {
+    sessionId: parentSessionId,
+    childSession: {
+      id: childSessionId,
+      name: "Researcher",
+      agentType: "explore",
+      status: "completed",
+      createdAt: 1,
+      updatedAt: 1,
+    },
+  });
+  assert.deepEqual(backend.knownSessions.get(childSessionId), {
+    cwd: selectedProject,
+    allowedRoots: [selectedProject],
+    readOnlyChild: true,
+    parentSessionId,
+  });
+  await backend.request("session/read", { sessionId: childSessionId });
+  await assert.rejects(
+    backend.request("session/resume", { sessionId: childSessionId }),
+    /Subagent sessions are read-only/,
+  );
+  assert.equal(backend.knownSessions.get(snapshotChildId)?.readOnlyChild, true);
+});
+
 test("connect serializes concurrent handshakes and creates a new user-data directory before spawn", async (t) => {
   const root = await createTempRoot("vibe-desktop-connect-test-");
   const userData = path.join(root, "not-created-yet");
@@ -409,6 +534,142 @@ test("active turn blocks a session switch until interrupt completion, then resta
   assert.equal(servers.length, 3);
 });
 
+test("configuration and attachment requests stay inside the pinned safe RPC shapes", async (t) => {
+  const servers = [];
+  const { backend, selectedProject } = await createBackend(t, {
+    spawnProcess: () => {
+      const server = new FakeAppServer();
+      servers.push(server);
+      return server;
+    },
+  });
+  await backend.chooseProject();
+  const opened = await backend.request("session/start", {
+    agentConfig: { cwd: selectedProject },
+  });
+  const sessionId = opened.state.session.id;
+
+  await assert.rejects(
+    backend.request("config/write", {
+      sessionId,
+      ops: [{ op: "set", path: "/active_model", value: "attacker-model" }],
+    }),
+    /outside the editable/,
+  );
+  await assert.rejects(
+    backend.request("config/write", {
+      sessionId,
+      ops: [
+        {
+          op: "set",
+          path: "/providers/0/extra_headers",
+          value: { Authorization: "secret" },
+        },
+      ],
+    }),
+    /not editable/,
+  );
+  await assert.rejects(
+    backend.request("config/write", {
+      sessionId,
+      ops: [
+        {
+          op: "set",
+          path: "/mcp_servers",
+          value: [
+            {
+              name: "arbitrary-process",
+              transport: "stdio",
+              command: "cmd.exe",
+            },
+          ],
+        },
+      ],
+    }),
+    /not editable here|Only HTTP MCP transports/,
+  );
+  await assert.rejects(
+    backend.request("config/write", {
+      sessionId,
+      ops: [
+        {
+          op: "set",
+          path: "/models/fixture-model/thinking",
+          value: "high",
+          targetLayer: "user",
+        },
+      ],
+    }),
+    /Read config\/fields/,
+  );
+  await assert.rejects(
+    backend.request("mcp_catalog/add", {
+      sessionId,
+      url: "http://remote.example/mcp",
+    }),
+    /must use HTTPS/,
+  );
+  await assert.rejects(
+    backend.request("mcp_catalog/toggle", {
+      sessionId,
+      name: "remote",
+      source: "connector",
+      disabled: true,
+    }),
+    /Only server-owned/,
+  );
+  await assert.rejects(
+    backend.request("turn/start", {
+      sessionId,
+      message: [
+        {
+          type: "image",
+          attachment: {
+            source: { kind: "file", path: "C:\\private\\image.png" },
+            alias: "image.png",
+            mimeType: "image/png",
+          },
+        },
+      ],
+    }),
+    /unsupported field|inline data/,
+  );
+  await assert.rejects(
+    backend.request("turn/start", {
+      sessionId,
+      message: [
+        {
+          type: "resource",
+          resource: {
+            kind: "text",
+            uri: "file:///C:/private/notes.txt",
+            mediaType: "text/plain",
+            text: "private contents",
+          },
+        },
+      ],
+    }),
+    /urn: or https:/,
+  );
+
+  await backend.request("config/write", {
+    sessionId,
+    ops: [{ op: "set", path: "/models/fixture-model/thinking", value: "off" }],
+  });
+  await backend.request("session/turn/enqueue", {
+    sessionId,
+    entries: [
+      { role: "user", content: [{ type: "text", text: "queued safely" }] },
+    ],
+  });
+  await backend.request("session/lease/subscribe", {});
+  const sent = servers[0].requests.map(({ method }) => method);
+  assert.ok(sent.includes("config/write"));
+  assert.ok(sent.includes("session/turn/enqueue"));
+  assert.ok(sent.includes("session/lease/subscribe"));
+  assert.ok(!sent.includes("turn/start"));
+});
+
 test("session start cannot opt into auto-approve or use an unselected cwd", async (t) => {
   const { backend, selectedProject } = await createBackend(t);
   await assert.rejects(
@@ -584,6 +845,11 @@ test(
         'provider = "fixture"',
         'alias = "fixture-model"',
         'thinking = "off"',
+        "[[mcp_servers]]",
+        'name = "fixture-disabled"',
+        'transport = "streamable-http"',
+        'url = "https://example.invalid/mcp"',
+        "disabled = true",
         "",
       ].join("\n");
       await fs.writeFile(path.join(vibeHome, "config.toml"), config, "utf8");
@@ -632,6 +898,86 @@ test(
       });
       const sessionId = opened?.state?.session?.id;
       assert.equal(typeof sessionId, "string");
+      const schema = await backend.request("config/schema", {});
+      assert.ok(schema.schema && typeof schema.schema === "object");
+      const scopedConfig = await backend.request("config/read", { sessionId });
+      assert.ok(scopedConfig.config && typeof scopedConfig.config === "object");
+      const fields = await backend.request("config/fields/read", { sessionId });
+      assert.ok(Array.isArray(fields.fields));
+      assert.ok(Array.isArray(fields.targets));
+      const providerField = fields.fields.find(
+        (field) => field.name === "providers",
+      );
+      assert.equal(providerField.path, "/providers");
+      const writeTarget = fields.targets[0];
+      const targetProviders = providerField.layerValues.find(
+        (entry) => entry.layer === writeTarget,
+      )?.value;
+      assert.ok(Array.isArray(targetProviders));
+      const fixtureProviderIndex = targetProviders.findIndex(
+        (provider) => provider.name === "fixture",
+      );
+      assert.notEqual(fixtureProviderIndex, -1);
+      const effective = await backend.request("config/effective/read", {
+        sessionId,
+      });
+      assert.ok(effective.config && typeof effective.config === "object");
+      const fixtureProvider = targetProviders[fixtureProviderIndex];
+      const editedApiBase = `${fixtureProvider.api_base}?desktop-config-test=1`;
+      await backend.request("config/write", {
+        sessionId,
+        ops: [
+          {
+            op: "set",
+            path: `/providers/${fixtureProviderIndex}/api_base`,
+            value: editedApiBase,
+            targetLayer: writeTarget,
+          },
+        ],
+        reason: "isolated provider field roundtrip",
+      });
+      const providerFieldsReadback = await backend.request(
+        "config/fields/read",
+        { sessionId },
+      );
+      const providerLayerReadback = providerFieldsReadback.fields
+        .find((field) => field.name === "providers")
+        .layerValues.find((entry) => entry.layer === writeTarget).value;
+      assert.equal(
+        providerLayerReadback[fixtureProviderIndex].api_base,
+        editedApiBase,
+      );
+      await backend.request("config/write", {
+        sessionId,
+        ops: [
+          {
+            op: "set",
+            path: `/providers/${fixtureProviderIndex}/api_base`,
+            value: fixtureProvider.api_base,
+            targetLayer: writeTarget,
+          },
+        ],
+        reason: "restore isolated provider config",
+      });
+      await backend.request("config/write", {
+        sessionId,
+        ops: [
+          { op: "set", path: "/models/fixture-model/temperature", value: 0.25 },
+        ],
+        reason: "isolated desktop test",
+      });
+      const catalog = await backend.request("mcp_catalog/read", { sessionId });
+      assert.match(JSON.stringify(catalog.mcp), /fixture-disabled/);
+      await backend.request("mcp_catalog/toggle", {
+        sessionId,
+        name: "fixture-disabled",
+        source: "server",
+        disabled: true,
+      });
+      const catalogAfterToggle = await backend.request("mcp_catalog/read", {
+        sessionId,
+      });
+      assert.match(JSON.stringify(catalogAfterToggle.mcp), /fixture-disabled/);
       const untrustedRuntime = await backend.request("runtime/read", {
         sessionId,
       });
@@ -1060,6 +1406,65 @@ function fsSyncExists(filePath) {
   return existsSync(filePath);
 }
 
+test("saved session metadata and lease updates remain scoped to chosen roots", async (t) => {
+  const server = new FakeAppServer();
+  const { backend, selectedProject, otherProject } = await createBackend(t, {
+    spawnProcess: () => server,
+  });
+  await backend.chooseProject();
+  server.sessionListItems = [
+    { id: "saved", cwd: selectedProject },
+    { id: "foreign", cwd: otherProject },
+  ];
+  await backend.request("session/list", {});
+  server.leaseItems = [
+    { sessionId: "saved", leaseHolder: { processId: 41 } },
+    { sessionId: "foreign", leaseHolder: { processId: 42 } },
+  ];
+  assert.deepEqual(await backend.request("session/lease/subscribe", {}), {
+    held: [server.leaseItems[0]],
+  });
+  const listed = await backend.request("session/list", {});
+  assert.deepEqual(listed.items[0].leaseHolder, { processId: 41 });
+  assert.deepEqual(
+    await backend.request("session/pin", { sessionId: "saved", pinned: true }),
+    { pinnedAt: 123 },
+  );
+  assert.deepEqual(
+    await backend.request("session/archive", {
+      sessionId: "saved",
+      archived: true,
+    }),
+    { archivedAt: 123 },
+  );
+  await assert.rejects(
+    backend.request("session/archive", {
+      sessionId: "foreign",
+      archived: true,
+    }),
+    /chosen project/,
+  );
+  const events = [];
+  backend.on("event", (event) => events.push(event));
+  server.notify("session/lease/updated", {
+    sessionId: "foreign",
+    leaseHolder: { processId: 99 },
+  });
+  server.notify("session/lease/updated", {
+    sessionId: "saved",
+    leaseHolder: null,
+  });
+  await until(() => events.length > 0);
+  assert.deepEqual(
+    events.map((event) => event.params.sessionId),
+    ["saved"],
+  );
+  assert.equal(
+    (await backend.request("session/list", {})).items[0].leaseHolder,
+    null,
+  );
+});
+
 class FakeAppServer extends EventEmitter {
   constructor() {
     super();
@@ -1098,6 +1503,20 @@ class FakeAppServer extends EventEmitter {
     if (method === "initialize")
       return { serverInfo: { name: "vibe-app-server", version: "2.26.1" } };
     if (method === "setup/status") return { hasApiKey: false };
+    if (method === "session/list")
+      return { items: this.sessionListItems ?? [] };
+    if (method === "session/lease/subscribe")
+      return { held: this.leaseItems ?? [] };
+    if (method === "session/pin")
+      return { pinnedAt: params.pinned ? 123 : null };
+    if (method === "session/archive")
+      return { archivedAt: params.archived ? 123 : null };
+    if (method === "session/read")
+      return this.sessionReadStates?.[params.sessionId] ?? {};
+    if (method === "account/read")
+      return {
+        account: { status: "ready", plan: { kind: "api", name: "API" } },
+      };
     if (method === "session/start" || method === "session/resume") {
       const id =
         method === "session/resume"

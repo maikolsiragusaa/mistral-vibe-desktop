@@ -269,12 +269,16 @@ test("worktree listing is read-only and includes linked worktrees", async (t) =>
   assert.equal(result.items.length, 2);
   assert.ok(
     result.items.some(
-      (item) => item.path === projectPath && item.branch === "main",
+      // Git may canonicalize drive-letter casing on Windows. Compare path
+      // identity with the platform's rules rather than its display spelling.
+      (item) =>
+        path.relative(projectPath, item.path) === "" && item.branch === "main",
     ),
   );
   assert.ok(
     result.items.some(
-      (item) => item.path === linkedPath && item.branch === "linked",
+      (item) =>
+        path.relative(linkedPath, item.path) === "" && item.branch === "linked",
     ),
   );
   assert.equal(result.truncated, false);

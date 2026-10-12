@@ -159,8 +159,11 @@ function totalCpuSeconds(samples: ProcessSample[]): number {
 }
 
 test("real desktop keeps Git, configured models, approvals and sessions grounded in Vibe", async () => {
-  const root = await fs.mkdtemp(
-    path.join(os.tmpdir(), "vibe-desktop-expansion-"),
+  // Use the same canonical root that the native project picker authorizes.
+  // Windows CI exposes TEMP through short names; the loopback provider must
+  // return paths under the selected project rather than that filesystem alias.
+  const root = await fs.realpath(
+    await fs.mkdtemp(path.join(os.tmpdir(), "vibe-desktop-expansion-")),
   );
   const userData = path.join(root, "app-data");
   const vibeHome = path.join(root, "vibe-home");

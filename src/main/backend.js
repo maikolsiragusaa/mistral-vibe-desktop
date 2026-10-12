@@ -180,6 +180,22 @@ function isInside(root, candidate) {
   );
 }
 
+function serverProcessEnvironment(env, platform) {
+  const childEnv = { ...env };
+  if (platform === "win32") {
+    // Keep GitPython's temporary patch from removing a key while Vibe copies
+    // os.environ, and exclude the current directory from executable lookup.
+    const noCwdSearch = "NODEFAULTCURRENTDIRECTORYINEXEPATH";
+    // GitPython patches this key in os.environ while Vibe copies the mapping
+    // to launch a shell; keeping it present avoids the concurrent delete race.
+    for (const key of Object.keys(childEnv)) {
+      if (key.toUpperCase() === noCwdSearch) delete childEnv[key];
+    }
+    childEnv[noCwdSearch] = "1";
+  }
+  return childEnv;
+}
+
 function getField(object, ...names) {
   for (const name of names) {
     if (Object.hasOwn(object ?? {}, name)) return object[name];
@@ -462,7 +478,7 @@ export class VibeBackend extends EventEmitter {
     });
     const child = this.spawnProcess(command, [], {
       cwd: userData,
-      env: { ...this.env },
+      env: serverProcessEnvironment(this.env, this.platform),
       shell: false,
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],

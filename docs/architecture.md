@@ -96,6 +96,14 @@ sandboxed with context isolation, no Node integration, a restrictive CSP and a
 small validated IPC surface. External navigation uses an explicit HTTPS
 allowlist. Model output is rendered as text and Markdown, without raw HTML.
 
+On Windows, the owned backend starts with
+`NODEFAULTCURRENTDIRECTORYINEXEPATH=1`. This excludes the current directory from
+implicit executable lookup and keeps GitPython's temporary environment patch
+from adding and removing that key while Vibe copies the shell environment.
+[GitPython documents this environment race](https://github.com/gitpython-developers/GitPython/blob/3.1.62/git/cmd.py#L260).
+The launcher changes only the child's environment; it preserves Vibe's shell
+implementation and leaves the parent process unchanged.
+
 Shutdown asks Vibe to stop and flush the attached session before terminating
 owned processes. Recovery never silently resubmits a prompt. Backend approval
 choices appear in the interface as supplied by Vibe. A folder trust decision

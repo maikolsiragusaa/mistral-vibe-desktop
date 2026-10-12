@@ -193,6 +193,58 @@ test("connect serializes concurrent handshakes and creates a new user-data direc
   );
 });
 
+test("Windows backend startup pins current-directory executable search off without mutating the parent environment", async (t) => {
+  const parentEnv = {
+    VIBE_TEST_KEEP_CASE: "preserved",
+    NoDefaultCurrentDirectoryInExePath: "0",
+    NODEFAULTCURRENTDIRECTORYINEXEPATH: "also-zero",
+  };
+  const originalParentEnv = { ...parentEnv };
+  const spawnedEnvironments = [];
+  const { backend } = await createBackend(t, {
+    platform: "win32",
+    env: parentEnv,
+    spawnProcess: (_command, _args, options) => {
+      spawnedEnvironments.push(options.env);
+      return new FakeAppServer();
+    },
+  });
+
+  await backend.connect();
+
+  assert.equal(spawnedEnvironments.length, 1);
+  const childEnv = spawnedEnvironments[0];
+  assert.equal(childEnv.VIBE_TEST_KEEP_CASE, "preserved");
+  assert.deepEqual(
+    Object.entries(childEnv).filter(
+      ([key]) => key.toUpperCase() === "NODEFAULTCURRENTDIRECTORYINEXEPATH",
+    ),
+    [["NODEFAULTCURRENTDIRECTORYINEXEPATH", "1"]],
+  );
+  assert.deepEqual(parentEnv, originalParentEnv);
+});
+
+test("non-Windows backend startup leaves the supplied executable-search environment alone", async (t) => {
+  const parentEnv = {
+    NoDefaultCurrentDirectoryInExePath: "0",
+    VIBE_TEST_KEEP_CASE: "preserved",
+  };
+  const spawnedEnvironments = [];
+  const { backend } = await createBackend(t, {
+    platform: "linux",
+    env: parentEnv,
+    spawnProcess: (_command, _args, options) => {
+      spawnedEnvironments.push(options.env);
+      return new FakeAppServer();
+    },
+  });
+
+  await backend.connect();
+
+  assert.equal(spawnedEnvironments.length, 1);
+  assert.deepEqual(spawnedEnvironments[0], parentEnv);
+});
+
 test("approval, denial, and user-question callback outputs use the upstream callback/result contract", async (t) => {
   const servers = [];
   const { backend, selectedProject } = await createBackend(t, {

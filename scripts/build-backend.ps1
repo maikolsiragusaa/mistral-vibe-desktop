@@ -15,9 +15,9 @@ $venvPython = Join-Path $repoRoot ".runtime\venv\Scripts\python.exe"
 $outputDirectory = [System.IO.Path]::GetFullPath((Join-Path $repoRoot $OutputPath))
 $upstreamCommit = "4ae5c5955da8e761318916bdb1a7f46f0b50c7d0"
 $supportFiles = @(
-    @{ Source = "vibe-app-server.spec"; Relative = "vibe-app-server.spec"; Sha256 = "3F10F09DC6CC9BAABC2E0A31D89277FA8C3871495BD702D30D6DC1CF3D205FE6" },
-    @{ Source = "pyinstaller\unified_runtime.py"; Relative = "pyinstaller\unified_runtime.py"; Sha256 = "34F16979A9300775E8CC80D0B9795F31C8893C3B05C53C43FB74E3D84EAE62C6" },
-    @{ Source = "pyinstaller\runtime_hook_truststore.py"; Relative = "pyinstaller\runtime_hook_truststore.py"; Sha256 = "57A0CEBBC53A599DD2DE4D0574CFDE19DA6671608844C2D6C94E0095AB0DF750" }
+    @{ Source = "vibe-app-server.spec"; Relative = "vibe-app-server.spec"; Blob = "8b5371a1362b1a79e0bfa1de1614240ec5878626"; Sha256 = "9EF54E4C146BDE645D2E6174AF29D86511425B20BDD4BF91866451F9220E7052" },
+    @{ Source = "pyinstaller\unified_runtime.py"; Relative = "pyinstaller\unified_runtime.py"; Blob = "ab0d392568880259070b96ac2ed7b6bd695d7863"; Sha256 = "EBDE581ABF55E88529040A6DF9680657C6F8E14EFBB00FEE32DBE715AA15BB95" },
+    @{ Source = "pyinstaller\runtime_hook_truststore.py"; Relative = "pyinstaller\runtime_hook_truststore.py"; Blob = "14311b0e5b9921ff2e85b2993417e56dd93ab19b"; Sha256 = "2E23CAF7D9A96FE921FCACE352FB1BEABB8A341ED873FB385B1B7F071678B52F" }
 )
 
 function Assert-ContainedPath([string] $Path, [string] $Purpose) {
@@ -43,6 +43,42 @@ function Remove-ContainedDirectory([string] $Path, [string] $Purpose) {
     $safePath = Assert-ContainedPath $Path $Purpose
     if (Test-Path -LiteralPath $safePath) {
         Remove-Item -LiteralPath $safePath -Recurse -Force
+    }
+}
+
+function Get-CanonicalSourceHashes([string] $Path) {
+    $sourceBytes = [System.IO.File]::ReadAllBytes($Path)
+    $utf8 = [System.Text.UTF8Encoding]::new($false, $true)
+    try {
+        $sourceText = $utf8.GetString($sourceBytes)
+    } catch {
+        throw "Upstream support file is not valid UTF-8: $Path"
+    }
+    if ($sourceText.Length -gt 0 -and [int][char]$sourceText[0] -eq 0xFEFF) {
+        throw "Upstream support file has an unexpected UTF-8 BOM: $Path"
+    }
+    $canonicalText = $sourceText.Replace("`r`n", "`n")
+    if ($canonicalText.Contains("`r")) {
+        throw "Upstream support file has a non-canonical bare carriage return: $Path"
+    }
+    $canonicalBytes = [System.Text.UTF8Encoding]::new($false).GetBytes($canonicalText)
+    $blobHeader = [System.Text.Encoding]::ASCII.GetBytes("blob $($canonicalBytes.Length)`0")
+    $blobBytes = [byte[]]::new($blobHeader.Length + $canonicalBytes.Length)
+    [System.Buffer]::BlockCopy($blobHeader, 0, $blobBytes, 0, $blobHeader.Length)
+    [System.Buffer]::BlockCopy($canonicalBytes, 0, $blobBytes, $blobHeader.Length, $canonicalBytes.Length)
+    $sha1 = [System.Security.Cryptography.SHA1]::Create()
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $blobHash = [System.BitConverter]::ToString($sha1.ComputeHash($blobBytes)).Replace("-", "").ToLowerInvariant()
+        $sha256Hash = [System.BitConverter]::ToString($sha256.ComputeHash($canonicalBytes)).Replace("-", "")
+    } finally {
+        $sha1.Dispose()
+        $sha256.Dispose()
+    }
+    return @{
+        Blob = $blobHash
+        Sha256 = $sha256Hash
+        CanonicalBytes = $canonicalBytes
     }
 }
 
@@ -99,10 +135,11 @@ foreach ($support in $supportFiles) {
     } else {
         Copy-Item -LiteralPath (Join-Path $upstreamDirectorySource $support.Source) -Destination $destination
     }
-    $actualHash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash
-    if ($actualHash -ne $support.Sha256) {
-        throw "Upstream support file failed its pinned SHA-256 check: $($support.Source)"
+    $actualHashes = Get-CanonicalSourceHashes $destination
+    if ($actualHashes.Blob -ne $support.Blob -or $actualHashes.Sha256 -ne $support.Sha256) {
+        throw "Upstream support file failed its pinned Git blob or canonical UTF-8/LF SHA-256 check: $($support.Source) (blob $($actualHashes.Blob), SHA-256 $($actualHashes.Sha256))"
     }
+    [System.IO.File]::WriteAllBytes($destination, $actualHashes.CanonicalBytes)
 }
 
 $pythonInfoJson = & $venvPython -c "import importlib.metadata as m, importlib.util, json, pathlib, platform, site, struct, sys; native=importlib.util.find_spec('mistralai_vibe_local_harness._native'); print(json.dumps({'vibe': m.version('mistral-vibe'), 'pyinstaller': m.version('pyinstaller'), 'python': platform.python_version(), 'machine': platform.machine(), 'bits': struct.calcsize('P') * 8, 'vibeRoot': str(pathlib.Path(importlib.util.find_spec('vibe').origin).resolve()), 'nativeRuntime': None if native is None else str(pathlib.Path(native.origin).resolve()), 'sitePackages': site.getsitepackages()[0], 'basePrefix': sys.base_prefix}))"
@@ -335,7 +372,7 @@ $buildMetadata = [ordered]@{
         "vibe/plugins/builtins/vibe/plugin.json",
         "vibe/plugins/builtins/vibe/skills/**/*.md"
     )
-    buildInputHashes = @($supportFiles | ForEach-Object { [ordered]@{ path = $_.Source.Replace('\', '/'); sha256 = $_.Sha256.ToLowerInvariant() } })
+    buildInputHashes = @($supportFiles | ForEach-Object { [ordered]@{ path = $_.Source.Replace('\', '/'); gitBlob = $_.Blob; canonicalUtf8LfSha256 = $_.Sha256.ToLowerInvariant() } })
     excludedRuntimePackages = @([ordered]@{ name = "textual-speedups"; reason = "Optional Textual TUI geometry accelerator; disabled in the stdio app-server." })
 }
 [System.IO.File]::WriteAllText($metadataPath, ($buildMetadata | ConvertTo-Json -Depth 5), [System.Text.UTF8Encoding]::new($false))

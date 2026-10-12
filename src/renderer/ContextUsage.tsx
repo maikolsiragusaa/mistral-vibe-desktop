@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import type { Runtime, SessionState } from "./types";
+import { useAnchoredPopover } from "./components/useAnchoredPopover";
 
 const number = (value: unknown): number | null =>
   typeof value === "number" && Number.isFinite(value) && value >= 0
@@ -29,6 +30,7 @@ export function ContextUsage({
   const [open, setOpen] = useState(false);
   const dialog = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
+  const position = useAnchoredPopover(open, trigger, dialog);
   const stats = runtime?.stats;
   const context = (state?.session as any)?.contextUsage;
   const input = field(context, "inputTokens", "input_tokens");
@@ -71,21 +73,7 @@ export function ContextUsage({
         event.stopPropagation();
         setOpen(false);
       }
-      if (event.key === "Tab") {
-        const nodes = dialog.current?.querySelectorAll<HTMLElement>(
-          'button, [href], input, select, textarea, [tabindex="0"]',
-        );
-        if (!nodes?.length) return;
-        const first = nodes[0];
-        const last = nodes[nodes.length - 1];
-        if (event.shiftKey && document.activeElement === first) {
-          event.preventDefault();
-          last.focus();
-        } else if (!event.shiftKey && document.activeElement === last) {
-          event.preventDefault();
-          first.focus();
-        }
-      }
+      if (event.key === "Tab") setOpen(false);
     };
     document.addEventListener("keydown", onKey, true);
     return () => {
@@ -149,94 +137,84 @@ export function ContextUsage({
       </span>
       {open && (
         <div
-          className="context-meter-backdrop"
-          onClick={(event) => {
-            if (event.target === event.currentTarget) setOpen(false);
+          ref={dialog}
+          className="context-meter-dialog"
+          popover="auto"
+          style={position}
+          onToggle={(event) => {
+            if (event.newState === "closed") setOpen(false);
           }}
+          role="dialog"
+          aria-label="Context and token usage details"
         >
-          <div
-            ref={dialog}
-            className="context-meter-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Context and token usage details"
-          >
-            <header>
-              <div>
-                <p className="eyebrow">Session observability</p>
-                <h2>Context & tokens</h2>
-              </div>
-              <button
-                aria-label="Close context usage"
-                className="icon-button"
-                onClick={() => setOpen(false)}
-              >
-                <X size={17} />
-              </button>
-            </header>
-            <div className="context-total">
-              <strong>{count(occupied)}</strong>
-              <span>of {count(capacity)} context tokens</span>
-              <small>
-                Latest context measurement from Vibe. Session totals are
-                separate.
-              </small>
+          <header>
+            <div>
+              <p className="eyebrow">This session</p>
+              <h2>Context & tokens</h2>
             </div>
-            <div
-              className="context-partition"
-              aria-label="Measured context partition"
+            <button
+              aria-label="Close context usage"
+              className="icon-button"
+              onClick={() => setOpen(false)}
             >
-              <i
-                className="input"
-                style={{ width: `${inputFraction * 100}%` }}
-              />
-              <i
-                className="output"
-                style={{ width: `${outputFraction * 100}%` }}
-              />
-            </div>
-            <dl className="usage-grid">
-              <div>
-                <dt>Context input</dt>
-                <dd>{count(input)}</dd>
-              </div>
-              <div>
-                <dt>Latest output</dt>
-                <dd>{count(output)}</dd>
-              </div>
-              <div>
-                <dt>Context headroom</dt>
-                <dd>{count(headroom)}</dd>
-              </div>
-              <div>
-                <dt>Session input</dt>
-                <dd>{count(promptTokens)}</dd>
-              </div>
-              <div>
-                <dt>Session output</dt>
-                <dd>{count(completionTokens)}</dd>
-              </div>
-              <div>
-                <dt>Total session tokens</dt>
-                <dd>
-                  {count(
-                    promptTokens !== null && completionTokens !== null
-                      ? promptTokens + completionTokens
-                      : null,
-                  )}
-                </dd>
-              </div>
-              <div>
-                <dt>Cached input</dt>
-                <dd>{cached && cached > 0 ? count(cached) : "Not reported"}</dd>
-              </div>
-            </dl>
-            <p className="measurement-note">
-              Input/output are the exposed context partitions. Vibe does not
-              expose a system/tools/messages breakdown or cached-token
-              attribution in the current Unified Harness.
-            </p>
+              <X size={17} />
+            </button>
+          </header>
+          <div className="context-total">
+            <strong>{count(occupied)}</strong>
+            <span>of {count(capacity)} context tokens</span>
+            <small>Latest measurement from Vibe</small>
           </div>
+          <div
+            className="context-partition"
+            aria-label="Measured context partition"
+          >
+            <i className="input" style={{ width: `${inputFraction * 100}%` }} />
+            <i
+              className="output"
+              style={{ width: `${outputFraction * 100}%` }}
+            />
+          </div>
+          <dl className="usage-grid">
+            <div>
+              <dt>Context input</dt>
+              <dd>{count(input)}</dd>
+            </div>
+            <div>
+              <dt>Latest output</dt>
+              <dd>{count(output)}</dd>
+            </div>
+            <div>
+              <dt>Context headroom</dt>
+              <dd>{count(headroom)}</dd>
+            </div>
+            <div>
+              <dt>Session input</dt>
+              <dd>{count(promptTokens)}</dd>
+            </div>
+            <div>
+              <dt>Session output</dt>
+              <dd>{count(completionTokens)}</dd>
+            </div>
+            <div>
+              <dt>Total session tokens</dt>
+              <dd>
+                {count(
+                  promptTokens !== null && completionTokens !== null
+                    ? promptTokens + completionTokens
+                    : null,
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt>Cached input</dt>
+              <dd>{cached && cached > 0 ? count(cached) : "Not reported"}</dd>
+            </div>
+          </dl>
+          <p className="measurement-note">
+            Input and output form the measured context. Session totals count all
+            turns. Other partitions are not reported.
+          </p>
         </div>
       )}
     </div>

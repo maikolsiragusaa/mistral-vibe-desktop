@@ -564,21 +564,6 @@ dd {
   padding-top: 9px;
   min-height: 37px;
 }
-.mode-picker {
-  display: flex;
-  gap: 4px;
-  align-items: center;
-  font-size: 11px;
-}
-.mode-picker select {
-  font-size: 11px;
-  max-width: 150px;
-}
-.model-picker select {
-  color: var(--muted);
-  font-size: 11px;
-  max-width: 180px;
-}
 .composer-spacer {
   flex: 1;
 }
@@ -1204,9 +1189,6 @@ dd {
   }
   .composer-toolbar {
     gap: 5px;
-  }
-  .model-picker select {
-    max-width: 135px;
   }
   .composer-meta > span:last-child {
     font-size: 8px;

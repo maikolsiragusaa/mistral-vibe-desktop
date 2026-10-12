@@ -92,6 +92,18 @@ popover instead of repeating the composer's execution status. Reasoning entries
 supplied by Vibe remain expandable and open while streaming; unsupported
 provider reasoning is not reconstructed.
 
+Model, agent mode and thinking effort share one anchored popover component.
+Each uses the same surfaces, selected checkmark, keyboard navigation and direct
+selection. Model search stays inside the compact menu, with provider, context
+and image support in each row. Menus use the native popover top layer to avoid
+clipping in the composer or settings window. The right sidebar starts closed.
+Git toggles its workspace and returns to the conversation from the same button;
+there is no separate Chat button in the header.
+
+Context details use the same anchored popover placement, opening directly above
+the usage ring without dimming the conversation. The compact three-column card
+keeps measured input/output, headroom and cumulative totals visible together.
+
 The activity language follows upstream CLI loading and thinking controls:
 [loading states](https://github.com/mistralai/mistral-vibe/blob/4ae5c5955da8e761318916bdb1a7f46f0b50c7d0/vibe/cli-rust/src/ui/loading/mod.rs)
 and [thinking picker](https://github.com/mistralai/mistral-vibe/blob/4ae5c5955da8e761318916bdb1a7f46f0b50c7d0/vibe/cli-rust/src/thinking_picker.rs).

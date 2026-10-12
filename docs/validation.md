@@ -1,6 +1,6 @@
 # Windows validation
 
-This record covers Vibe Desktop 0.2 on 12 October 2026. All model responses used
+This record covers Vibe Desktop 0.2 on 12–13 October 2026. All model responses used
 for automated checks come from loopback fixtures. The official Vibe engine runs
 the real tools, approvals, queues, storage and subagents against disposable
 projects. Fixture token counts test the integration; they are not hosted-model
@@ -123,6 +123,14 @@ runtime. Installed users do not need Python or uv. CI repeats tests before and
 after packaging, then uploads the installer, SHA-256, screenshots, process-tree
 measurements and backend manifests. No public release or merge is performed.
 
+Hosted Windows UI tests allow one retry with a fresh disposable profile for
+transient host failures. The packaged launcher waits for the renderer's initial
+custom-scheme navigation before attaching through CDP and Node's inspector;
+this avoids racing Playwright's first-navigation listener. The application and
+its sandbox remain unchanged. Failed-attempt traces are retained
+in the uploaded artifacts, including when a retry succeeds. Profile cleanup
+waits for transient Chromium file locks with a bounded retry count.
+
 A clean Windows 11 install/uninstall, DPI/snap/Mica behavior on that host, hosted
 Mistral/GLM entitlement and model quality, live browser sign-in, connector OAuth,
 registry network browsing and account quota rendering remain external checks.
@@ -134,22 +142,21 @@ remaining desktop work and the methods missing from Unified dispatch.
 
 ## Executed desktop gates
 
-The original scenario passed with the frozen backend in 25.4 seconds; the
-expanded scenario passed in 1.5 minutes. Both ran the actual Electron window,
+The original scenario passed with the frozen backend in 22.1 seconds; the
+expanded scenario passed in 1.8 minutes. Both ran the actual Electron window,
 with real Unified tools and disposable loopback endpoints. The frozen startup
-sample reached ready in 2,677 ms, used 503.7 MiB of combined working sets across
-six owned processes and observed 0.29% of one CPU core over 5.44 seconds. These
+sample reached ready in 3,317 ms, used 505.8 MiB of combined working sets across
+six owned processes and observed 6.22% of one CPU core over 5.53 seconds. These
 measurements include shared pages and the installed runtime process tree.
 
 The packaged expansion scenario passed in 1.5 minutes, including graphical
 provider addition, API-base leaf editing, model addition and a final check that
-all owned processes exited. The packaged baseline scenario passed in 20.9
-seconds. The latest packaged process sample reached ready in 4,488 ms and
-recorded 513.8 MiB across six processes, with 0.58% of one core over 5.42 seconds.
+all owned processes exited. The packaged baseline scenario passed in 24.6
+seconds. The latest packaged process sample reached ready in 3,385 ms and
+recorded 528.7 MiB across six processes, with 0.28% of one core over 5.50 seconds.
 This is a new-process launch with normal host caches, not a cold-OS benchmark.
 
-Local installer: `Vibe-Desktop-0.2.0-x64-Setup.exe`, 164,822,459 bytes.
-SHA-256: `8ead009a01aa3dfbaba1da2a32b205be2d6423462e3203a3d7f9fdac0ad4ebe6`.
+Local installer: `Vibe-Desktop-0.2.0-x64-Setup.exe`, 164,821,071 bytes.
+SHA-256: `833c8369604008f9a3d1f6bbf7a26afa86e4c303693f38b90e49c174a979f140`.
 Authenticode status: `NotSigned`. `out/SHA256SUMS.txt` records the checksum.
-After the final NSIS build, the app executable, `app.asar` and frozen backend
-hashes exactly matched the package exercised by the expanded UI scenario.
+The packaged UI scenarios execute the app produced by this final NSIS build.

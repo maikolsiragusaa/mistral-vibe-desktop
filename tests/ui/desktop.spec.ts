@@ -3,6 +3,7 @@ import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { launchDesktop } from "./launch-desktop";
 
 test("real desktop connects, opens a local project, streams and resumes in both themes", async () => {
   const repo = process.cwd();
@@ -56,9 +57,15 @@ test("real desktop connects, opens a local project, streams and resumes in both 
       path.join(vibeHome, "config.toml"),
       `enable_telemetry = false\nenable_update_checks = false\ninclude_project_context = false\nactive_model = "fixture-model"\n[[providers]]\nname = "fixture"\napi_base = "${providerUrl}"\napi_key_env_var = "VIBE_TEST_KEY"\n[[models]]\nname = "fixture-model"\nalias = "fixture-model"\nprovider = "fixture"\nthinking = "off"\n`,
     );
-    desktop = await _electron.launch({
+    desktop = await launchDesktop({
       ...(packagedDesktop ? { executablePath: packagedDesktop } : {}),
-      args: packagedDesktop ? [] : [repo],
+      args: packagedDesktop
+        ? [
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+            "--disable-background-timer-throttling",
+          ]
+        : [repo],
       env: {
         ...process.env,
         VIBE_APP_SERVER: packagedDesktop ? "" : server,
@@ -69,7 +76,7 @@ test("real desktop connects, opens a local project, streams and resumes in both 
         NO_PROXY: "127.0.0.1,localhost",
         no_proxy: "127.0.0.1,localhost",
       },
-      timeout: 30_000,
+      timeout: 60_000,
     });
     await desktop.evaluate(({ dialog }, projectPath) => {
       dialog.showOpenDialog = async () => ({
@@ -97,7 +104,7 @@ test("real desktop connects, opens a local project, streams and resumes in both 
     window.on("pageerror", (error) => pageErrors.push(error.message));
     await expect(
       window.getByText("Make room for good code.", { exact: true }),
-    ).toBeVisible();
+    ).toBeVisible({ timeout: 30_000 });
     await expect(window.locator(".engine-status")).toContainText("2.26.1", {
       timeout: 30_000,
     });
@@ -164,6 +171,8 @@ test("real desktop connects, opens a local project, streams and resumes in both 
     await window.screenshot({
       path: path.join(repo, "docs/screenshots/desktop-session.png"),
     });
+    await expect(window.locator(".context-panel")).toHaveCount(0);
+    await window.getByRole("button", { name: "Toggle context panel" }).click();
     await window.getByRole("tab", { name: "Environment", exact: true }).click();
     await expect(window.locator(".context-panel")).toContainText(
       "Unified Harness",
@@ -280,6 +289,13 @@ test("real desktop connects, opens a local project, streams and resumes in both 
     provider.kill();
     // Only remove the disposable, freshly created test directory.
     if (path.resolve(root).startsWith(path.resolve(os.tmpdir()) + path.sep))
-      await fs.rm(root, { recursive: true, force: true });
+      await fs.rm(root, {
+        recursive: true,
+        force: true,
+        // Chromium may release its SQLite journal just after the main process
+        // exits. Keep cleanup bounded while waiting for that Windows handle.
+        maxRetries: 8,
+        retryDelay: 250,
+      });
   }
 });

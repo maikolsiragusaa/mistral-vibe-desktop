@@ -1,10 +1,10 @@
 {
   "launchMode": "packaged",
-  "measuredAt": "2026-10-12T21:28:57.339Z",
-  "coldStartupMs": 4488,
-  "workingSetMiB": 513.8,
-  "idleCpuPercentOfOneCore": 0.58,
-  "sampleIntervalSeconds": 5.42,
+  "measuredAt": "2026-10-12T23:03:34.780Z",
+  "coldStartupMs": 3385,
+  "workingSetMiB": 528.7,
+  "idleCpuPercentOfOneCore": 0.28,
+  "sampleIntervalSeconds": 5.5,
   "scope": "Main Electron process and all recursive descendants, including renderer, GPU, utility and Vibe runtime children. Working sets can include shared pages.",
   "processes": [
     {
@@ -13,23 +13,23 @@
     },
     {
       "name": "Vibe Desktop",
-      "workingSetMiB": 110
+      "workingSetMiB": 115.3
     },
     {
       "name": "Vibe Desktop",
-      "workingSetMiB": 109.3
+      "workingSetMiB": 109.8
     },
     {
       "name": "Vibe Desktop",
-      "workingSetMiB": 107.3
+      "workingSetMiB": 43.9
     },
     {
       "name": "Vibe Desktop",
-      "workingSetMiB": 44
+      "workingSetMiB": 116.9
     },
     {
       "name": "vibe-app-server",
-      "workingSetMiB": 131.8
+      "workingSetMiB": 131.3
     }
   ]
 }

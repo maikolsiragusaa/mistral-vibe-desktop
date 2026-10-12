@@ -26,6 +26,11 @@ Management opens in a dedicated window while the conversation stays available.
   diagnostics and official quota pages.
 - Direct reasoning-level picker, public thinking/activity feedback, draggable
   sidebars, compact titlebar MCP status and expanded tool-result cards.
+- Shared compact popovers for model, agent mode and reasoning, with direct
+  selection and keyboard controls. The context sidebar starts closed; Git
+  toggles back to the conversation without a separate Chat header button.
+- Context usage opens in a compact card anchored above its ring, preserving
+  measured partitions and cumulative session counts without a modal backdrop.
 - Subagent identity, task, duration, output and parent-authorized child history.
 - On-demand secondary bundles, bounded Git output and process-tree measurements.
 

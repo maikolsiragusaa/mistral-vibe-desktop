@@ -3,6 +3,7 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { launchDesktop } from "./launch-desktop";
 
 test.setTimeout(240_000);
 
@@ -182,7 +183,7 @@ test("real desktop keeps Git, configured models, approvals and sessions grounded
     "---\nname: desktop-check\ndescription: Inspect a disposable desktop fixture.\n---\nRead the fixture and report what you observed.\n",
   );
 
-  let desktop: Awaited<ReturnType<typeof _electron.launch>> | undefined;
+  let desktop: Awaited<ReturnType<typeof launchDesktop>> | undefined;
   let plainProvider: ChildProcess | undefined;
   let toolProvider: ChildProcess | undefined;
   let subagentProvider: ChildProcess | undefined;
@@ -306,9 +307,15 @@ test("real desktop keeps Git, configured models, approvals and sessions grounded
     await fs.writeFile(path.join(vibeHome, "config.toml"), config);
 
     const launchStarted = performance.now();
-    desktop = await _electron.launch({
+    desktop = await launchDesktop({
       ...(packagedDesktop ? { executablePath: packagedDesktop } : {}),
-      args: packagedDesktop ? [] : [repo],
+      args: packagedDesktop
+        ? [
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+            "--disable-background-timer-throttling",
+          ]
+        : [repo],
       env: {
         ...process.env,
         VIBE_APP_SERVER: packagedDesktop ? "" : backend,
@@ -319,7 +326,7 @@ test("real desktop keeps Git, configured models, approvals and sessions grounded
         NO_PROXY: "127.0.0.1,localhost",
         no_proxy: "127.0.0.1,localhost",
       },
-      timeout: 30_000,
+      timeout: 60_000,
     });
     await desktop.evaluate(({ dialog }, projectPath) => {
       dialog.showOpenDialog = async () => ({
@@ -348,6 +355,12 @@ test("real desktop keeps Git, configured models, approvals and sessions grounded
       `[vibe-perf] packagedOrInstalledColdStartupMs=${coldStartupMs}`,
     );
     await capture(page, "home-empty");
+    await expect(page.locator(".context-panel")).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Chat", exact: true }),
+    ).toHaveCount(0);
+    await page.getByRole("button", { name: "Toggle context panel" }).click();
+    await expect(page.locator(".context-panel")).toBeVisible();
     await page
       .getByRole("button", { name: "Collapse project sidebar" })
       .click();
@@ -597,6 +610,16 @@ test("real desktop keeps Git, configured models, approvals and sessions grounded
     await expect(usage).toContainText("120");
     await expect(usage).toContainText("12");
     await expect(usage).not.toContainText("t/s");
+    const contextAnchor = (await page
+      .getByRole("button", { name: "Context and token usage", exact: true })
+      .boundingBox())!;
+    const contextPopup = (await usage.boundingBox())!;
+    expect(contextPopup.width).toBeLessThan(400);
+    expect(Math.abs(contextPopup.x - contextAnchor.x)).toBeLessThan(16);
+    expect(contextPopup.y + contextPopup.height).toBeLessThanOrEqual(
+      contextAnchor.y,
+    );
+    await expect(usage).not.toHaveAttribute("aria-modal", "true");
     await capture(page, "context-tokens");
     await page.getByRole("button", { name: "Close context usage" }).click();
     await expect(page.locator(".response-metrics")).toHaveCount(0);
@@ -806,8 +829,6 @@ test("real desktop keeps Git, configured models, approvals and sessions grounded
     await expect(
       page.getByRole("dialog", { name: "Workspace management", exact: true }),
     ).toHaveCount(0);
-    await page.getByRole("button", { name: "Chat", exact: true }).click();
-
     // Exercise two separate, substantial Vibe turns, switching sessions while
     // the first local model request is still running.
     const sourceFixture = Array.from(
@@ -907,22 +928,22 @@ test("real desktop keeps Git, configured models, approvals and sessions grounded
     // session's history and turns intact. Both API ids only exist in fixture config.
     const modelButton = page.getByRole("button", { name: /^Model: GLM 5\.2$/ });
     await modelButton.click();
-    const modelDialog = page.getByRole("dialog", { name: "Choose a model" });
+    const modelDialog = page.getByRole("menu", { name: "Choose a model" });
     await expect(modelDialog).toBeVisible();
     const searchModels = modelDialog.getByLabel("Search configured models");
+    await expect(searchModels).toBeFocused();
     await capture(page, "models-configured");
     await searchModels.fill("glm-5.3");
-    const modelOption = modelDialog.getByRole("option", { name: /GLM 5\.3/ });
+    const modelOption = modelDialog.getByRole("menuitemradio", {
+      name: /GLM 5\.3/,
+    });
     await expect(modelOption).toBeVisible();
-    await modelOption.click();
-    await expect(modelDialog.locator(".model-picker-details")).toContainText(
-      "glm-5.3",
-    );
-    await modelDialog.getByRole("radio", { name: "High" }).check();
+    await expect(modelOption).toContainText("fixture-tools");
+    await searchModels.press("ArrowDown");
+    await expect(modelOption).toBeFocused();
     await capture(page, "model-glm-5-3");
-    await modelDialog
-      .getByRole("button", { name: "Use model", exact: true })
-      .click();
+    await modelOption.click();
+    await expect(modelDialog).toHaveCount(0);
     await expect(
       page.getByRole("button", { name: /^Model: GLM 5\.3$/ }),
     ).toBeVisible();
@@ -942,7 +963,21 @@ test("real desktop keeps Git, configured models, approvals and sessions grounded
       thinking: "high",
     });
 
-    await page.getByLabel("Agent mode", { exact: true }).selectOption("ask");
+    await page.getByRole("button", { name: /^Agent mode:/ }).click();
+    const modeMenu = page.getByRole("menu", { name: "Choose agent mode" });
+    await capture(page, "mode-picker");
+    await page.keyboard.press("Escape");
+    await expect(modeMenu).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: /^Agent mode:/ }),
+    ).toBeFocused();
+    await page.getByRole("button", { name: /^Agent mode:/ }).click();
+    await modeMenu
+      .getByRole("menuitemradio", { name: /^Ask before tools/ })
+      .click();
+    await expect(
+      page.getByRole("button", { name: "Agent mode: Ask before tools" }),
+    ).toBeEnabled();
     // The loopback provider asks the actual Vibe engine to call its file tool.
     // Keep the callback visible in the captured state before approving it.
     await page
@@ -1071,16 +1106,16 @@ test("real desktop keeps Git, configured models, approvals and sessions grounded
       .click();
     await expect(gitWorkspace).toContainText("No GitHub origin remote found");
 
-    await page.getByRole("button", { name: "Chat", exact: true }).click();
+    await page.getByRole("button", { name: "Git", exact: true }).click();
     await page.getByRole("button", { name: /^Model:/ }).click();
-    const agentsPicker = page.getByRole("dialog", { name: "Choose a model" });
+    const agentsPicker = page.getByRole("menu", { name: "Choose a model" });
     await agentsPicker
       .getByLabel("Search configured models")
       .fill("local-agent-model");
-    await agentsPicker.getByRole("option", { name: /Local agents/ }).click();
     await agentsPicker
-      .getByRole("button", { name: "Use model", exact: true })
+      .getByRole("menuitemradio", { name: /Local agents/ })
       .click();
+    await expect(agentsPicker).toHaveCount(0);
     await page
       .getByLabel("Prompt", { exact: true })
       .fill("Delegate a local fixture inspection to Explore.");
@@ -1109,18 +1144,16 @@ test("real desktop keeps Git, configured models, approvals and sessions grounded
 
     // Keep keyboard composition from sending a prompt and exercise a useful
     // validation error with a disposable unsupported attachment.
-    await page.getByRole("button", { name: "Chat", exact: true }).click();
     const prompt = page.getByLabel("Prompt", { exact: true });
     await page.getByRole("button", { name: /^Model:/ }).click();
-    const attachmentPicker = page.getByRole("dialog", {
+    const attachmentPicker = page.getByRole("menu", {
       name: "Choose a model",
     });
     await attachmentPicker
       .getByLabel("Search configured models")
       .fill("glm-5.2");
-    await attachmentPicker.getByRole("option", { name: /GLM 5\.2/ }).click();
     await attachmentPicker
-      .getByRole("button", { name: "Use model", exact: true })
+      .getByRole("menuitemradio", { name: /GLM 5\.2/ })
       .click();
     await expect(attachmentPicker).toHaveCount(0);
     await expect(prompt).toBeEnabled();
@@ -1307,8 +1340,15 @@ test("real desktop keeps Git, configured models, approvals and sessions grounded
       path
         .resolve(root)
         .toLowerCase()
-        .startsWith(`${path.resolve(os.tmpdir()).toLowerCase()}${path.sep}`)
+        .startsWith(
+          `${(await fs.realpath(os.tmpdir())).toLowerCase()}${path.sep}`,
+        )
     )
-      await fs.rm(root, { recursive: true, force: true });
+      await fs.rm(root, {
+        recursive: true,
+        force: true,
+        maxRetries: 8,
+        retryDelay: 250,
+      });
   }
 });

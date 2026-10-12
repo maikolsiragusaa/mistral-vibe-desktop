@@ -15,6 +15,7 @@ import { ContextUsage } from "./ContextUsage";
 import { PanelBoundary } from "./components/PanelBoundary";
 import { McpStatus } from "./components/McpStatus";
 import { ReasoningPicker } from "./components/ReasoningPicker";
+import { ModePicker } from "./components/ModePicker";
 import "./desktop.css";
 import {
   ArrowUp,
@@ -164,7 +165,7 @@ export function App() {
   const [panel, setPanel] = useState<"activity" | "changes" | "environment">(
     "activity",
   );
-  const [panelOpen, setPanelOpen] = useState(true);
+  const [panelOpen, setPanelOpen] = useState(false);
   const [railOpen, setRailOpen] = useState(true);
   const [railWidth, setRailWidth] = useState(238);
   const [panelWidth, setPanelWidth] = useState(290);
@@ -1053,7 +1054,9 @@ export function App() {
       detail: "Search the configured Vibe inventory",
       action: () =>
         document
-          .querySelector<HTMLButtonElement>(".model-picker-trigger")
+          .querySelector<HTMLButtonElement>(
+            '.composer-picker-trigger[aria-label^="Model:"]',
+          )
           ?.click(),
     },
     {
@@ -1346,15 +1349,11 @@ export function App() {
         </div>
         <div className="header-actions">
           <button
-            className={`workspace-tab ${view === "chat" ? "selected" : ""}`}
-            onClick={() => setView("chat")}
-          >
-            <MessageSquare size={14} />
-            Chat
-          </button>
-          <button
             className={`workspace-tab ${view === "git" ? "selected" : ""}`}
-            onClick={() => setView("git")}
+            aria-pressed={view === "git"}
+            onClick={() =>
+              setView((current) => (current === "git" ? "chat" : "git"))
+            }
           >
             <GitBranch size={14} />
             Git
@@ -1941,49 +1940,34 @@ export function App() {
                   >
                     <Paperclip size={15} />
                   </button>
-                  <label className="mode-picker">
-                    <ShieldCheck size={13} />
-                    <select
-                      aria-label="Agent mode"
-                      value={runtime?.activeAgent.name || mode}
-                      disabled={working || running}
-                      onChange={(event) => {
-                        const agentName = event.target.value;
-                        setMode(agentName);
-                        if (state)
-                          void protect(async () => {
-                            const result = await request<any>(
-                              "session/agent/update",
-                              { sessionId: state.session.id, agentName },
-                            );
-                            setRuntime(result.runtime);
-                          });
-                      }}
-                    >
-                      {(
-                        runtime?.agents.filter(
-                          (agent) => agent.agentType !== "subagent",
-                        ) || [
-                          { name: "" },
-                          { name: "ask" },
-                          { name: "plan" },
-                          { name: "accept-edits" },
-                        ]
-                      ).map((agent) => (
-                        <option key={agent.name} value={agent.name}>
-                          {agent.name === ""
-                            ? "Default from Vibe"
-                            : agent.name === "ask"
-                              ? "Ask before tools"
-                              : agent.name === "plan"
-                                ? "Plan"
-                                : agent.name === "accept-edits"
-                                  ? "Accept edits"
-                                  : agent.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                  <ModePicker
+                    agents={
+                      runtime?.agents.filter(
+                        (agent) => agent.agentType !== "subagent",
+                      ) || [
+                        { name: "" },
+                        { name: "ask" },
+                        { name: "plan" },
+                        { name: "accept-edits" },
+                      ]
+                    }
+                    current={runtime?.activeAgent.name || mode}
+                    disabled={working || running}
+                    onSelect={(agentName) => {
+                      setMode(agentName);
+                      if (state)
+                        return protect(async () => {
+                          const result = await request<any>(
+                            "session/agent/update",
+                            {
+                              sessionId: state.session.id,
+                              agentName,
+                            },
+                          );
+                          setRuntime(result.runtime);
+                        });
+                    }}
+                  />
                   <ModelPicker
                     models={modelMetadata}
                     activeModel={runtime?.config.activeModel}

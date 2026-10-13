@@ -5,9 +5,9 @@ Runtime: official Mistral Vibe Unified **2.26.1 frozen** (no upgrade, no paid mo
 
 ## Final commit & branch state
 
-- Checkpoint `487552f` (M3 delivery) → `be17a10` (M4 implementation: skills lifecycle, stdio MCP, tools/layers/ACP, terminal hardening) → `fa339cb` (M4 delivery record) → `8726141` (M4 UX styles) → **`ac3a16b` (M4 CI fix: canonical paths for short-TEMP runners)**. All pushed normally to `origin` (no `--force`, no new branch).
-- Branch `codex/windows-client` head: `ac3a16b25c36198d24b8311065fbcc658d681878`. PR #1 stays **draft** (`state: open`, `draft: true`, `merged: false`, `mergeable: true`, verified via API). **No merge to `main`, no release, no upstream modification.**
-- `ac3a16b` differs from red `8726141` by `tests/backend-stdio-m4.test.js` only (4-line canonical-path hardening, same production code). Its own push + PR runs are fully green (below).
+- Checkpoint `487552f` (M3 delivery) → `be17a10` (M4 implementation: skills lifecycle, stdio MCP, tools/layers/ACP, terminal hardening) → `fa339cb` (M4 delivery record) → `8726141` (M4 UX styles) → `ac3a16b` (M4 CI fix: canonical paths for short-TEMP runners) → **`76cb0bd` (M4 delivery: final CI record)**. All pushed normally to `origin` (no `--force`, no new branch).
+- Branch `codex/windows-client` head: `76cb0bd1d22be38860638530f139ef90a1a9e6de`. PR #1 stays **draft** (`state: open`, `draft: true`, `merged: false`, `mergeable: true`, verified via API). **No merge to `main`, no release, no upstream modification.**
+- `76cb0bd` differs from twice-green `ac3a16b` by `docs/m4-delivery.md` only — a file no CI step builds, tests, probes, packages or uploads. Its own push CI is fully green (below).
 - Working tree clean at delivery; `git status` verified before each push and commit.
 
 ## Architecture & decisions
@@ -69,10 +69,10 @@ Runtime: official Mistral Vibe Unified **2.26.1 frozen** (no upgrade, no paid mo
 ## GitHub Actions & installer
 
 - Workflow: `Windows build` (`.github/workflows/windows.yml`) on push + PR — build, `npm test` (161), frozen-backend probe, dev-app UI, NSIS packaging, packaged-app UI, SHA-256 + artifact upload.
-- Closing SHA `ac3a16b`: push run `https://github.com/maikolsiragusaa/mistral-vibe-desktop/actions/runs/38464524646` (**success**, 20:39–20:51 UTC, all 16 steps incl. build+161 tests, frozen-backend probe, dev-app UI, NSIS, packaged-app UI, SHA-256, artifact upload) and PR #1 run `https://github.com/maikolsiragusaa/mistral-vibe-desktop/actions/runs/38464533761` (**success**, same steps).
-- CI artifact (14-day retention): `Vibe-Desktop-Windows-ac3a16b25c36198d24b8311065fbcc658d681878-af73c6417d78ac32c1ce2f1ab481677c1e865aa804b0b9c0669ba9a4d63a7da1` (167 463 353 bytes zip: Setup exe + SHA256SUMS + screenshots + perf JSON + playwright traces + backend manifests).
-- CI installer SHA-256: `af73c6417d78ac32c1ce2f1ab481677c1e865aa804b0b9c0669ba9a4d63a7da1` (authoritative for `ac3a16b`; unsigned, same posture as M3).
-- Prior SHAs for the record: `8726141` push `38463419351` + PR `38463426902` (red at step 9, short-TEMP cause below); `fa339cb` push `38463248102` + PR `38463255453` (red at step 9, same cause).
+- Closing SHA `76cb0bd`: push run `https://github.com/maikolsiragusaa/mistral-vibe-desktop/actions/runs/38467884799` (**success**, 21:05–21:17 UTC, all 16 steps incl. build+161 tests, frozen-backend probe, dev-app UI, NSIS, packaged-app UI, SHA-256, artifact upload) and PR #1 run `https://github.com/maikolsiragusaa/mistral-vibe-desktop/actions/runs/38467892309` (**success**, same steps).
+- CI artifact (14-day retention): `Vibe-Desktop-Windows-76cb0bd1d22be38860638530f139ef90a1a9e6de-6bb3b315c37511d775422363da9aaac1087ee42b3def1bc1b8dbd1f90a7ddd56` (167 420 998 bytes zip: Setup exe + SHA256SUMS + screenshots + perf JSON + playwright traces + backend manifests).
+- CI installer SHA-256: `6bb3b315c37511d775422363da9aaac1087ee42b3def1bc1b8dbd1f90a7ddd56` (authoritative for `76cb0bd`; unsigned, same posture as M3).
+- Prior SHAs for the record: `ac3a16b` push `38464524646` + PR `38464533761` (**success**, same steps — code-identical to head except this delivery file); `8726141` push `38463419351` + PR `38463426902` (red at step 9, short-TEMP cause below); `fa339cb` push `38463248102` + PR `38463255453` (red at step 9, same cause).
 - Local installer: superseded by the CI artifact (same posture as M3: unsigned NSIS, `NotSigned`).
 
 ## Cloud: verified vs official-surface-only

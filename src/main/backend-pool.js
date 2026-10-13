@@ -2,8 +2,31 @@ import { EventEmitter } from "node:events";
 import { VibeBackend } from "./backend.js";
 
 const MAX_CONNECTIONS = 4;
-const SESSION_READ_METHODS = new Set(["session/read", "session/history/list"]);
-const NEW_SESSION_METHODS = new Set(["session/start", "session/resume"]);
+const SESSION_READ_METHODS = new Set([
+  "session/read",
+  "session/history/list",
+  "session/history/get",
+  "session/turns/list",
+  "session/rewind/read",
+  "session/ready/read",
+  "session/ready/wait",
+  "session/log/read",
+  "session/backgroundProcess/output",
+]);
+const NEW_SESSION_METHODS = new Set([
+  "session/start",
+  "session/resume",
+  "session/continue",
+  "session/fork",
+]);
+const HOST_METADATA_METHODS = new Set([
+  "session/pin",
+  "session/archive",
+  "session/markAsSeen",
+  "session/rename",
+  "session/title/update",
+  "session/delete",
+]);
 
 /**
  * Keeps one official app-server connection attached to each live desktop
@@ -52,14 +75,22 @@ export class VibeBackendPool extends EventEmitter {
 
   async request(method, params = {}) {
     if (this.shuttingDown) throw new Error("Vibe backend is shutting down");
-    if (method === "session/start")
+    if (method === "session/start" || method === "session/continue")
       return this.#withAllocationLock(() => this.#startNew(method, params));
     if (method === "session/resume")
       return this.#withAllocationLock(() => this.#resume(params));
+    if (method === "session/fork")
+      return this.#withAllocationLock(() => this.#fork(params));
 
-    const sessionId = params?.sessionId;
+    const sessionId = params?.sessionId ?? params?.sourceSessionId;
     const owner =
       typeof sessionId === "string" ? this.ownedSessions.get(sessionId) : null;
+    // Fork sources are tracked by sourceSessionId; the new session gets its own worker.
+    const forkOwner =
+      method === "session/fork" && typeof params?.sourceSessionId === "string"
+        ? this.ownedSessions.get(params.sourceSessionId)
+        : null;
+    void forkOwner;
     if (method === "session/stop") {
       if (!owner) throw new Error("This session is not attached to this app");
       try {
@@ -67,6 +98,25 @@ export class VibeBackendPool extends EventEmitter {
       } finally {
         this.ownedSessions.delete(sessionId);
       }
+    }
+    if (method === "session/delete") {
+      if (owner) throw new Error("Stop this session before deleting it");
+      return this.primary.request(method, params);
+    }
+    if (method === "session/rewind") {
+      // In-place rewind mutates the attached session; fork-rewind replaces it.
+      if (params?.inplace === false) {
+        if (!owner) throw new Error("This session is not attached to this app");
+        const result = await owner.request(method, params);
+        const nextId = result?.state?.session?.id ?? result?.session?.id;
+        if (typeof nextId === "string" && nextId !== sessionId) {
+          this.ownedSessions.delete(sessionId);
+          this.ownedSessions.set(nextId, owner);
+        }
+        return result;
+      }
+      if (!owner) throw new Error("This session is not attached to this app");
+      return owner.request(method, params);
     }
     if (SESSION_READ_METHODS.has(method)) {
       if (owner) return owner.request(method, params);
@@ -77,6 +127,10 @@ export class VibeBackendPool extends EventEmitter {
       if (parentOwner) return parentOwner.request(method, params);
       // The official server handles canonical stored-session reads at the host
       // boundary; this does not replace the primary connection's live root.
+      return this.primary.request(method, params);
+    }
+    if (HOST_METADATA_METHODS.has(method)) {
+      if (owner) return owner.request(method, params);
       return this.primary.request(method, params);
     }
     if (NEW_SESSION_METHODS.has(method))
@@ -145,6 +199,32 @@ export class VibeBackendPool extends EventEmitter {
       );
     this.ownedSessions.set(resumedId, worker);
     this.emit("status", { ...worker.status, sessionId: resumedId });
+    return result;
+  }
+
+  async #fork(params) {
+    const sourceId = params?.sourceSessionId;
+    if (typeof sourceId === "string") {
+      const sourceEntry = this.primary.knownSessions.get(sourceId);
+      if (sourceEntry?.readOnlyChild)
+        throw new Error(
+          "Subagent sessions are read-only and remain controlled by their parent",
+        );
+    }
+    const worker = this.#allocateBackend();
+    const result = await worker.request("session/fork", params);
+    const nextId =
+      result?.state?.session?.id ?? result?.session?.id ?? result?.sessionId;
+    if (typeof nextId !== "string" || !nextId)
+      throw new Error(
+        "Vibe forked a session without returning its session id",
+      );
+    if (this.ownedSessions.has(nextId))
+      throw new Error(
+        "Vibe returned a session id already attached to this app",
+      );
+    this.ownedSessions.set(nextId, worker);
+    this.emit("status", { ...worker.status, sessionId: nextId });
     return result;
   }
 

@@ -11,18 +11,21 @@ This is an independent project, unaffiliated with Mistral AI.
 
 ![Vibe Desktop, running on Windows](docs/screenshots/desktop-light.png)
 
-## What works today
+## What works today (0.3.0-M1)
 
-- An integrated Windows titlebar, warm pixel geometry and light/dark themes.
-- Up to four attached sessions, persistent history, search, pin and archive.
-- Streaming Markdown, tool effects, approvals and user questions.
-- Prompt queue, steering, interruption, attachments and draft recovery.
-- Searchable models, provider metadata and supported reasoning levels.
-- Git diffs, staging, commits, history, worktrees and GitHub PR links.
-- A management window for MCP, skills, plugins, providers and diagnostics.
-- Subagent identity, task, output and read-only session history.
-- Context partitions, token totals, reasoning controls and official quota pages.
-- Browser sign-in through Vibe's delegated authentication controller.
+- Code/Work selector and Local/Cloud scope; Work links to official Mistral
+  surfaces without faking a local API.
+- Up to four attached sessions with tabs: close detaches (keeps running),
+  stop/archive/delete are explicit. Fork, rewind, rename, mark-as-seen,
+  compact and transcript export via official RPC.
+- Live subagent navigation: open the real child conversation with breadcrumb,
+  read-only notice and return; parent keeps working.
+- Scheduled loops GUI (create/list/delete/clear) and Cloud panel
+  (projectLinks, vibeCode picker, one-way Teleport preflight).
+- Opt-in durable unsent drafts across full restart (localStorage only).
+- Streaming Markdown, tool effects, approvals, prompt queue, attachments,
+  searchable models, Git diffs/staging/commits/worktrees/PR links, MCP/skills/
+  plugins management, context/token diagnostics and delegated browser sign-in.
 - A packaged upstream backend, reproducible build scripts and Windows CI.
 
 The client uses Vibe's configuration and credential store. The model picker

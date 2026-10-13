@@ -170,6 +170,129 @@ const PARAM_KEYS = Object.freeze({
   "skills/list": ["sessionId"],
   "plugins/read": ["sessionId"],
   "diagnostics/list": ["sessionId"],
+  "session/continue": ["agentConfig", "historyLimit"],
+  "session/fork": [
+    "idempotencyKey",
+    "sourceSessionId",
+    "entryId",
+    "agentConfig",
+    "afterTurnId",
+    "historyLimit",
+    "attach",
+  ],
+  "session/rewind": ["sessionId", "entryId", "restoreFiles", "inplace"],
+  "session/rewind/read": ["sessionId", "entryId"],
+  "session/markAsSeen": ["sessionId"],
+  "session/delete": ["sessionId"],
+  "session/rename": ["sessionId", "title"],
+  "session/relocate": ["sessionId", "cwd"],
+  "session/compact": ["sessionId", "extraInstructions"],
+  "session/settings/update": ["sessionId", "maxTurns", "maxTokens"],
+  "session/history/clear": ["sessionId"],
+  "session/history/get": ["sessionId", "historyLimit"],
+  "session/turns/list": ["sessionId", "page"],
+  "session/ready/read": ["sessionId"],
+  "session/ready/wait": ["sessionId"],
+  "session/log/read": ["sessionId"],
+  "session/context/inject": [
+    "sessionId",
+    "input",
+    "asMessage",
+    "injectInvokedSkill",
+    "clientUserMessageId",
+    "mentionStats",
+  ],
+  "session/backgroundProcess/output": [
+    "sessionId",
+    "processId",
+    "fromEnd",
+    "cursor",
+    "waitMs",
+    "maxBytes",
+  ],
+  "session/backgroundProcess/stop": ["sessionId", "processId"],
+  "loops/create": ["sessionId", "interval", "prompt"],
+  "loops/list": ["sessionId"],
+  "loops/delete": ["sessionId", "loopId"],
+  "loops/clear": ["sessionId"],
+  "projectLinks/list": [],
+  "projectLinks/create": ["rootPath", "name", "defaultBranch"],
+  "projectLinks/link": ["rootPath", "projectId", "projectName"],
+  "projectLinks/unlink": ["rootPath"],
+  "projectLinks/save": [
+    "rootPath",
+    "projectId",
+    "projectName",
+    "expectedGithubRepoUrl",
+  ],
+  "projectLinks/inspectRoot": ["rootPath"],
+  "projectLinks/resolveRoot": ["rootPath"],
+  "projectLinks/picker/load": ["rootPath"],
+  "projectLinks/picker/loadMore": ["rootPath", "cursor"],
+  "vibeCode/projects/open": ["sessionId", "purpose", "prompt"],
+  "vibeCode/projects/loadMore": ["sessionId", "pickerId"],
+  "vibeCode/projects/create": [
+    "sessionId",
+    "pickerId",
+    "name",
+    "defaultBranch",
+  ],
+  "vibeCode/projects/select": ["sessionId", "pickerId", "projectId"],
+  "vibeCode/projects/unlink": ["sessionId", "pickerId"],
+  "vibeCode/projects/cancel": ["sessionId", "pickerId"],
+  "vibeCode/projects/recover": ["sessionId", "pickerId"],
+  "vibeCode/teleport/start": [
+    "sessionId",
+    "pickerId",
+    "operationId",
+    "prompt",
+    "projectId",
+  ],
+  "vibeCode/teleport/cancel": ["sessionId", "operationId"],
+  "vibeCode/teleport/push/respond": ["sessionId", "operationId", "approved"],
+  "workspace/git/checkouts": ["repoLocalPaths", "sessionCwd"],
+  "workspace/git/worktrees/limit/update": ["limit"],
+  "workspace/git/worktrees/prune": [],
+  "workspace/git/worktrees/reap": ["cwd", "requesterId", "requestId"],
+  "workspace/git/worktrees/reap/cancel": ["cwd", "requesterId", "requestId"],
+  "workspace/git/worktrees/remove": ["cwd"],
+  "skills/import": ["sessionId", "skillId", "version", "alias", "scope"],
+  "skills/setAlias": ["sessionId", "name", "alias", "scope"],
+  "skills/setVersion": ["sessionId", "name", "version", "scope"],
+  "skills/setLatest": ["sessionId", "name", "scope"],
+  "skills/remove": ["sessionId", "name", "scope"],
+  "skills/convertLocal": ["sessionId", "name", "scope"],
+  "skills/versions": ["sessionId", "skillId"],
+  "skills/updates": ["sessionId"],
+  "mcp/add": [
+    "sessionId",
+    "url",
+    "name",
+    "scopes",
+    "transport",
+    "allowInsecureHttp",
+  ],
+  "mcp/toggle": ["sessionId", "name", "source", "disabled", "toolName"],
+  "mcp/login": ["sessionId", "name"],
+  "mcp/logout": ["sessionId", "name"],
+  "mcp/refresh": ["sessionId"],
+  "tools/list": ["sessionId"],
+  "agents/install": ["sessionId", "agentName"],
+  "agents/uninstall": ["sessionId", "agentName"],
+  "diagnostics/logs/read": ["sessionId", "limit", "offset"],
+  "identity/read": ["sessionId"],
+  "providerAuth/read": ["sessionId"],
+  "narration/summarize": [
+    "sessionId",
+    "userMessage",
+    "assistantText",
+    "error",
+    "messageId",
+  ],
+  "shell/run": ["sessionId", "operationId", "command", "timeoutSeconds", "cwd"],
+  "shell/interrupt": ["sessionId", "operationId"],
+  "workspace/prompt/prepare": ["sessionId", "message", "titleContent"],
+  "review/revert": ["sessionId", "target"],
 });
 
 const REQUIRED_KEYS = Object.freeze({
@@ -233,6 +356,75 @@ const REQUIRED_KEYS = Object.freeze({
   "skills/list": ["sessionId"],
   "plugins/read": ["sessionId"],
   "diagnostics/list": ["sessionId"],
+  "session/fork": ["sourceSessionId"],
+  "session/rewind": ["sessionId", "entryId"],
+  "session/rewind/read": ["sessionId", "entryId"],
+  "session/markAsSeen": ["sessionId"],
+  "session/delete": ["sessionId"],
+  "session/rename": ["sessionId", "title"],
+  "session/relocate": ["sessionId", "cwd"],
+  "session/compact": ["sessionId"],
+  "session/history/clear": ["sessionId"],
+  "session/history/get": ["sessionId"],
+  "session/turns/list": ["sessionId"],
+  "session/ready/read": ["sessionId"],
+  "session/ready/wait": ["sessionId"],
+  "session/log/read": ["sessionId"],
+  "session/context/inject": ["sessionId", "input"],
+  "session/backgroundProcess/output": ["sessionId", "processId"],
+  "session/backgroundProcess/stop": ["sessionId", "processId"],
+  "loops/create": ["sessionId", "interval", "prompt"],
+  "loops/list": ["sessionId"],
+  "loops/delete": ["sessionId", "loopId"],
+  "loops/clear": ["sessionId"],
+  "projectLinks/create": ["rootPath", "name"],
+  "projectLinks/link": ["rootPath", "projectId", "projectName"],
+  "projectLinks/unlink": ["rootPath"],
+  "projectLinks/save": ["rootPath", "projectId", "projectName"],
+  "projectLinks/inspectRoot": ["rootPath"],
+  "projectLinks/resolveRoot": ["rootPath"],
+  "projectLinks/picker/load": ["rootPath"],
+  "projectLinks/picker/loadMore": ["rootPath", "cursor"],
+  "vibeCode/projects/open": ["sessionId"],
+  "vibeCode/projects/loadMore": ["sessionId", "pickerId"],
+  "vibeCode/projects/create": ["sessionId", "pickerId", "name"],
+  "vibeCode/projects/select": ["sessionId", "pickerId", "projectId"],
+  "vibeCode/projects/unlink": ["sessionId", "pickerId"],
+  "vibeCode/projects/cancel": ["sessionId", "pickerId"],
+  "vibeCode/projects/recover": ["sessionId", "pickerId"],
+  "vibeCode/teleport/start": ["sessionId", "pickerId", "operationId", "projectId"],
+  "vibeCode/teleport/cancel": ["sessionId", "operationId"],
+  "vibeCode/teleport/push/respond": ["sessionId", "operationId", "approved"],
+  "workspace/git/checkouts": ["repoLocalPaths"],
+  "workspace/git/worktrees/limit/update": ["limit"],
+  "workspace/git/worktrees/reap": ["cwd"],
+  "workspace/git/worktrees/reap/cancel": ["cwd"],
+  "workspace/git/worktrees/remove": ["cwd"],
+  "skills/import": ["sessionId", "skillId"],
+  "skills/setAlias": ["sessionId", "name", "alias"],
+  "skills/setVersion": ["sessionId", "name", "version"],
+  "skills/setLatest": ["sessionId", "name"],
+  "skills/remove": ["sessionId", "name"],
+  "skills/convertLocal": ["sessionId", "name"],
+  "skills/versions": ["sessionId", "skillId"],
+  "skills/updates": ["sessionId"],
+  "mcp/add": ["url"],
+  "mcp/toggle": ["name", "source", "disabled"],
+  "mcp/login": ["name"],
+  "mcp/logout": ["name"],
+  "mcp/refresh": ["sessionId"],
+  "tools/list": ["sessionId"],
+  "agents/install": ["sessionId", "agentName"],
+  "agents/uninstall": ["sessionId", "agentName"],
+  "diagnostics/logs/read": ["sessionId"],
+  "identity/read": ["sessionId"],
+  "providerAuth/read": ["sessionId"],
+  "narration/summarize": ["sessionId", "userMessage", "assistantText"],
+  "shell/run": ["sessionId", "operationId", "command"],
+  "shell/interrupt": ["sessionId", "operationId"],
+  "workspace/prompt/prepare": ["sessionId", "message"],
+  "review/revert": ["sessionId", "target"],
+  "session/settings/update": ["sessionId"],
 });
 
 const ACTIVE_SESSION_METHODS = new Set([
@@ -291,10 +483,78 @@ const ACTIVE_SESSION_METHODS = new Set([
   "skills/list",
   "plugins/read",
   "diagnostics/list",
+  "session/rename",
+  "session/relocate",
+  "session/compact",
+  "session/settings/update",
+  "session/history/clear",
+  "session/context/inject",
+  "session/backgroundProcess/output",
+  "session/backgroundProcess/stop",
+  "session/ready/read",
+  "session/ready/wait",
+  "session/log/read",
+  "loops/create",
+  "loops/list",
+  "loops/delete",
+  "loops/clear",
+  "vibeCode/projects/open",
+  "vibeCode/projects/loadMore",
+  "vibeCode/projects/create",
+  "vibeCode/projects/select",
+  "vibeCode/projects/unlink",
+  "vibeCode/projects/cancel",
+  "vibeCode/projects/recover",
+  "vibeCode/teleport/start",
+  "vibeCode/teleport/cancel",
+  "vibeCode/teleport/push/respond",
+  "skills/import",
+  "skills/setAlias",
+  "skills/setVersion",
+  "skills/setLatest",
+  "skills/remove",
+  "skills/convertLocal",
+  "skills/versions",
+  "skills/updates",
+  "mcp/add",
+  "mcp/toggle",
+  "mcp/login",
+  "mcp/logout",
+  "mcp/refresh",
+  "tools/list",
+  "agents/install",
+  "agents/uninstall",
+  "diagnostics/logs/read",
+  "identity/read",
+  "providerAuth/read",
+  "narration/summarize",
+  "shell/run",
+  "shell/interrupt",
+  "workspace/prompt/prepare",
+  "review/revert",
+  "session/turns/list",
+  "session/history/get",
+  "session/rewind/read",
 ]);
 
-const SESSION_READ_METHODS = new Set(["session/read", "session/history/list"]);
-const SESSION_METADATA_METHODS = new Set(["session/pin", "session/archive"]);
+const SESSION_READ_METHODS = new Set([
+  "session/read",
+  "session/history/list",
+  "session/history/get",
+  "session/turns/list",
+  "session/rewind/read",
+  "session/ready/read",
+  "session/ready/wait",
+  "session/log/read",
+  "session/backgroundProcess/output",
+]);
+const SESSION_METADATA_METHODS = new Set([
+  "session/pin",
+  "session/archive",
+  "session/markAsSeen",
+  "session/rename",
+  "session/title/update",
+]);
 
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -511,11 +771,26 @@ export class VibeBackend extends EventEmitter {
     if (method === "session/list" && params.cwds?.length === 0)
       return { items: [] };
 
-    if (method === "session/start") {
+    if (method === "session/start" || method === "session/continue") {
       await this.#switchSessionIfNeeded();
     } else if (method === "session/resume") {
       this.#authorizeResume(params);
       await this.#switchSessionIfNeeded(params.sessionId);
+    } else if (method === "session/fork") {
+      const sourceEntry = this.knownSessions.get(params.sourceSessionId);
+      if (sourceEntry?.readOnlyChild)
+        throw new Error(
+          "Subagent sessions are read-only and remain controlled by their parent",
+        );
+      if (params.attach !== false)
+        await this.#switchSessionIfNeeded();
+      else if (this.activeTurnId && params.sourceSessionId === this.activeSessionId)
+        throw new Error(
+          "Interrupt or wait for the active turn before forking this session",
+        );
+    } else if (method === "session/rewind" && params.inplace === false) {
+      // Non-inplace rewind forks: it replaces the attached session like fork.
+      await this.#switchSessionIfNeeded();
     }
 
     this.#authorizeSessionMethod(method, params);
@@ -987,6 +1262,157 @@ export class VibeBackend extends EventEmitter {
         assertOnlyKeys(input.page, ["cursor", "limit", "direction"], "page");
       }
     }
+    if (method === "session/rename")
+      requireString(input.title, "title", { max: 500 });
+    if (method === "session/fork") {
+      requireString(input.sourceSessionId, "sourceSessionId", { max: 256 });
+      if (input.entryId !== undefined)
+        requireString(input.entryId, "entryId", { max: 256 });
+      if (input.afterTurnId !== undefined)
+        requireString(input.afterTurnId, "afterTurnId", { max: 256 });
+      if (input.idempotencyKey !== undefined)
+        requireString(input.idempotencyKey, "idempotencyKey", { max: 256 });
+      if (input.attach !== undefined && typeof input.attach !== "boolean")
+        throw new TypeError("attach must be a boolean");
+      if (input.historyLimit !== undefined) validateHistoryLimit(input.historyLimit);
+      if (input.agentConfig !== undefined)
+        this.#validateResumeAgentConfig(input.agentConfig);
+    }
+    if (method === "session/continue") {
+      if (input.historyLimit !== undefined) validateHistoryLimit(input.historyLimit);
+      if (input.agentConfig !== undefined)
+        this.#validateResumeAgentConfig(input.agentConfig);
+    }
+    if (method === "session/rewind" || method === "session/rewind/read") {
+      requireString(input.entryId, "entryId", { max: 256 });
+      if (method === "session/rewind") {
+        if (input.restoreFiles !== undefined && typeof input.restoreFiles !== "boolean")
+          throw new TypeError("restoreFiles must be a boolean");
+        if (input.inplace !== undefined && typeof input.inplace !== "boolean")
+          throw new TypeError("inplace must be a boolean");
+      }
+    }
+    if (method === "session/relocate")
+      this.#validateProjectPath(input.cwd, { required: true, exact: true });
+    if (method === "session/compact" && input.extraInstructions !== undefined)
+      requireString(input.extraInstructions, "extraInstructions", {
+        min: 0,
+        max: 10000,
+      });
+    if (method === "session/settings/update") {
+      if (input.maxTurns !== undefined && input.maxTurns !== null &&
+        (!Number.isInteger(input.maxTurns) || input.maxTurns < 0))
+        throw new TypeError("maxTurns must be a non-negative integer");
+      if (input.maxTokens !== undefined && input.maxTokens !== null &&
+        (!Number.isInteger(input.maxTokens) || input.maxTokens < 0))
+        throw new TypeError("maxTokens must be a non-negative integer");
+    }
+    if (method === "session/history/get" && input.historyLimit !== undefined)
+      validateHistoryLimit(input.historyLimit);
+    if (method === "session/turns/list" && input.page !== undefined) {
+      requireObject(input.page, "page");
+      assertOnlyKeys(input.page, ["cursor", "limit", "direction"], "page");
+    }
+    if (method === "session/context/inject") {
+      if (!Array.isArray(input.input) && typeof input.input !== "string")
+        throw new TypeError("input must be an array or string");
+      if (input.asMessage !== undefined && typeof input.asMessage !== "boolean")
+        throw new TypeError("asMessage must be a boolean");
+      if (input.injectInvokedSkill === true)
+        throw new TypeError("Renderer requests cannot inject skill context");
+      if (input.clientUserMessageId !== undefined)
+        requireString(input.clientUserMessageId, "clientUserMessageId", { max: 256 });
+    }
+    if (
+      method === "session/backgroundProcess/output" ||
+      method === "session/backgroundProcess/stop"
+    )
+      requireString(input.processId, "processId", { max: 256 });
+    if (method === "loops/create") {
+      requireString(input.interval, "interval", { max: 256 });
+      requireString(input.prompt, "prompt", { max: 100000 });
+    }
+    if (method === "loops/delete")
+      requireString(input.loopId, "loopId", { max: 256 });
+    if (method.startsWith("projectLinks/")) validateProjectLinksParams(method, input, (value, options) =>
+      this.#validateProjectPath(value, options),
+    );
+    if (method.startsWith("vibeCode/") || method.startsWith("vibeCode/teleport/"))
+      validateVibeCodeParams(method, input);
+    if (
+      [
+        "workspace/git/worktrees/remove",
+        "workspace/git/worktrees/reap",
+        "workspace/git/worktrees/reap/cancel",
+      ].includes(method)
+    )
+      this.#validateProjectPath(input.cwd, {
+        required: true,
+        allowSubdirectory: true,
+      });
+    if (method === "workspace/git/worktrees/limit/update") {
+      if (!Number.isInteger(input.limit) || input.limit < 0 || input.limit > 100)
+        throw new TypeError("limit must be between 0 and 100");
+    }
+    if (method === "workspace/git/checkouts") {
+      if (!Array.isArray(input.repoLocalPaths) || !input.repoLocalPaths.length || input.repoLocalPaths.length > 20)
+        throw new TypeError("repoLocalPaths must contain 1-20 paths");
+      for (const repoPath of input.repoLocalPaths)
+        this.#validateProjectPath(repoPath, { required: true });
+      if (input.sessionCwd !== undefined)
+        this.#validateProjectPath(input.sessionCwd, { required: true });
+    }
+    if (
+      [
+        "skills/import",
+        "skills/setAlias",
+        "skills/setVersion",
+        "skills/setLatest",
+        "skills/remove",
+        "skills/convertLocal",
+      ].includes(method)
+    )
+      validateSkillMutation(method, input);
+    if (method === "skills/versions") requireString(input.skillId, "skillId", { max: 512 });
+    if (method === "mcp/add") validateMcpAdd(input);
+    if (method === "mcp/toggle") {
+      requireString(input.name, "name", { max: 256 });
+      if (!["server", "connector"].includes(input.source))
+        throw new TypeError("MCP toggle source must be server or connector");
+      if (typeof input.disabled !== "boolean")
+        throw new TypeError("disabled must be a boolean");
+      if (input.toolName !== undefined)
+        requireString(input.toolName, "toolName", { max: 256 });
+    }
+    if (["mcp/login", "mcp/logout"].includes(method))
+      requireString(input.name, "name", { max: 256 });
+    if (["agents/install", "agents/uninstall"].includes(method))
+      requireString(input.agentName, "agentName", { max: 128 });
+    if (method === "diagnostics/logs/read") {
+      if (input.limit !== undefined && (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 500))
+        throw new TypeError("limit must be between 1 and 500");
+      if (input.offset !== undefined && (!Number.isInteger(input.offset) || input.offset < 0))
+        throw new TypeError("offset must be a non-negative integer");
+    }
+    if (method === "narration/summarize") {
+      requireString(input.userMessage, "userMessage", { max: 100000 });
+      requireString(input.assistantText, "assistantText", { max: 200000 });
+    }
+    if (method === "shell/run") {
+      requireString(input.operationId, "operationId", { max: 256 });
+      requireString(input.command, "command", { max: 32768 });
+      if (input.timeoutSeconds !== undefined &&
+        (typeof input.timeoutSeconds !== "number" || input.timeoutSeconds <= 0 || input.timeoutSeconds > 600))
+        throw new TypeError("timeoutSeconds must be between 0 and 600");
+      if (input.cwd !== undefined)
+        this.#validateProjectPath(input.cwd, { required: true, allowSubdirectory: true });
+    }
+    if (method === "shell/interrupt")
+      requireString(input.operationId, "operationId", { max: 256 });
+    if (method === "workspace/prompt/prepare") {
+      if (!Array.isArray(input.message) || !input.message.length)
+        throw new TypeError("message must be a non-empty array");
+    }
 
     return structuredClone(input);
   }
@@ -1070,6 +1496,56 @@ export class VibeBackend extends EventEmitter {
   }
 
   #authorizeSessionMethod(method, params) {
+    if (method === "session/fork") {
+      const entry = this.knownSessions.get(params.sourceSessionId);
+      if (
+        !entry?.allowedRoots.some((root) =>
+          this.authorizedProjects.has(stablePathKey(root)),
+        )
+      )
+        throw new Error(
+          "List sessions for a chosen project before forking one",
+        );
+      if (this.activeTurnId && params.sourceSessionId === this.activeSessionId)
+        throw new Error(
+          "Interrupt or wait for the active turn before forking this session",
+        );
+      return;
+    }
+    if (method === "session/delete") {
+      const entry = this.knownSessions.get(params.sessionId);
+      if (
+        !entry ||
+        entry.readOnlyChild ||
+        !entry.allowedRoots.some((root) =>
+          this.authorizedProjects.has(stablePathKey(root)),
+        )
+      )
+        throw new Error(
+          "Only a listed session for a chosen project can be deleted",
+        );
+      if (params.sessionId === this.activeSessionId)
+        throw new Error("Stop this session before deleting it");
+      return;
+    }
+    if (method === "session/rewind") {
+      const entry = this.knownSessions.get(params.sessionId);
+      if (
+        !entry ||
+        entry.readOnlyChild ||
+        !entry.allowedRoots.some((root) =>
+          this.authorizedProjects.has(stablePathKey(root)),
+        )
+      )
+        throw new Error(
+          "Only a listed session for a chosen project can be rewound",
+        );
+      if (this.activeTurnId && params.sessionId === this.activeSessionId)
+        throw new Error(
+          "Interrupt or wait for the active turn before rewinding",
+        );
+      return;
+    }
     const sessionId = params.sessionId;
     if (!sessionId) return;
     if (SESSION_READ_METHODS.has(method)) {
@@ -1183,19 +1659,47 @@ export class VibeBackend extends EventEmitter {
             .filter(Boolean) ?? [...this.authorizedProjects.values()]);
       for (const session of result.items ?? [])
         this.#rememberSession(session, roots);
-    } else if (method === "session/start" || method === "session/resume") {
-      const session = state?.session;
+    } else if (
+      method === "session/start" ||
+      method === "session/resume" ||
+      method === "session/continue" ||
+      method === "session/fork" ||
+      method === "session/rewind" ||
+      method === "session/history/clear"
+    ) {
+      const session = state?.session ?? result?.state?.session ?? result?.session;
       if (session?.id) {
-        const requestedCwd = params.agentConfig?.cwd;
+        const requestedCwd = params.agentConfig?.cwd ?? params.cwd;
         const entry = this.knownSessions.get(session.id);
+        const sourceEntry =
+          method === "session/fork"
+            ? this.knownSessions.get(params.sourceSessionId)
+            : null;
         const roots = requestedCwd
           ? [this.#canonicalProjectSyncLookup(requestedCwd)].filter(Boolean)
-          : (entry?.allowedRoots ?? []);
-        this.#rememberSession(session, roots);
-        this.activeSessionId = session.id;
-        this.activeProjectRoot = roots[0] ?? null;
-        this.#rememberChildSessions(state);
+          : (entry?.allowedRoots ?? sourceEntry?.allowedRoots ?? []);
+        const effectiveRoots = roots.length
+          ? roots
+          : [...this.authorizedProjects.values()].slice(0, 1);
+        this.#rememberSession(session, effectiveRoots);
+        if (params.attach !== false) {
+          this.activeSessionId = session.id;
+          this.activeProjectRoot = effectiveRoots[0] ?? null;
+        }
+        this.#rememberChildSessions(state ?? result);
       }
+    } else if (method === "session/delete") {
+      this.knownSessions.delete(params.sessionId);
+      this.sessionLeaseHolders.delete(params.sessionId);
+    } else if (method === "session/relocate" && state?.session?.id) {
+      const previous = this.knownSessions.get(state.session.id);
+      const roots = params.cwd
+        ? [this.#canonicalProjectSyncLookup(params.cwd)].filter(Boolean)
+        : (previous?.allowedRoots ?? []);
+      this.#rememberSession(state.session, roots);
+      if (state.session.id === this.activeSessionId)
+        this.activeProjectRoot = roots[0] ?? this.activeProjectRoot;
+      this.#rememberChildSessions(state);
     } else if (method === "session/read" && state?.session?.id) {
       const previous = this.knownSessions.get(state.session.id);
       this.#rememberSession(state.session, previous?.allowedRoots ?? []);
@@ -2263,6 +2767,70 @@ function validateReviewOwner(owner) {
       );
   } else {
     throw new TypeError("Review owner kind must be agent or manual");
+  }
+}
+
+function validateHistoryLimit(value) {
+  if (!Number.isInteger(value) || value < 1 || value > 500)
+    throw new TypeError("historyLimit must be between 1 and 500");
+}
+
+function validateProjectLinksParams(method, params, validatePath) {
+  if (params.rootPath !== undefined)
+    validatePath(params.rootPath, { required: true });
+  if (method === "projectLinks/create")
+    requireString(params.name, "name", { max: 256 });
+  if (method === "projectLinks/link") {
+    requireString(params.projectId, "projectId", { max: 256 });
+    requireString(params.projectName, "projectName", { max: 256 });
+  }
+  if (method === "projectLinks/save") {
+    requireString(params.projectId, "projectId", { max: 256 });
+    requireString(params.projectName, "projectName", { max: 256 });
+    if (params.expectedGithubRepoUrl !== undefined && params.expectedGithubRepoUrl !== null)
+      requireString(params.expectedGithubRepoUrl, "expectedGithubRepoUrl", { max: 2048 });
+  }
+  if (method === "projectLinks/picker/loadMore")
+    requireString(params.cursor, "cursor", { max: 2048 });
+  if (params.defaultBranch !== undefined && params.defaultBranch !== null)
+    requireString(params.defaultBranch, "defaultBranch", { max: 256 });
+}
+
+function validateVibeCodeParams(method, params) {
+  if (params.pickerId !== undefined)
+    requireString(params.pickerId, "pickerId", { max: 256 });
+  if (params.operationId !== undefined)
+    requireString(params.operationId, "operationId", { max: 256 });
+  if (params.projectId !== undefined)
+    requireString(params.projectId, "projectId", { max: 256 });
+  if (params.prompt !== undefined && params.prompt !== null)
+    requireString(params.prompt, "prompt", { min: 0, max: 100000 });
+  if (params.purpose !== undefined && !["configure", "teleport"].includes(params.purpose))
+    throw new TypeError("purpose must be configure or teleport");
+  if (params.name !== undefined)
+    requireString(params.name, "name", { max: 256 });
+  if (params.defaultBranch !== undefined)
+    requireString(params.defaultBranch, "defaultBranch", { max: 256 });
+  if (params.approved !== undefined && typeof params.approved !== "boolean")
+    throw new TypeError("approved must be a boolean");
+}
+
+function validateSkillMutation(method, params) {
+  requireString(params.name, "name", { max: 256 });
+  if (params.scope !== undefined && !["global", "project", "local"].includes(params.scope))
+    throw new TypeError("scope must be global, project or local");
+  if (method === "skills/setAlias")
+    requireString(params.alias, "alias", { max: 256 });
+  if (method === "skills/setVersion") {
+    if (!Number.isInteger(params.version) || params.version < 1)
+      throw new TypeError("version must be a positive integer");
+  }
+  if (method === "skills/import") {
+    requireString(params.skillId, "skillId", { max: 512 });
+    if (params.version !== undefined && (!Number.isInteger(params.version) || params.version < 1))
+      throw new TypeError("version must be a positive integer");
+    if (params.alias !== undefined && params.alias !== null)
+      requireString(params.alias, "alias", { max: 256 });
   }
 }
 

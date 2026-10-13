@@ -16,6 +16,16 @@ import { PanelBoundary } from "./components/PanelBoundary";
 import { McpStatus } from "./components/McpStatus";
 import { ReasoningPicker } from "./components/ReasoningPicker";
 import { ModePicker } from "./components/ModePicker";
+import { SubagentView } from "./SubagentView";
+import { LoopsPanel } from "./LoopsPanel";
+import { CloudPanel } from "./CloudPanel";
+import { WorkPanel } from "./WorkPanel";
+import {
+  isDraftPersistenceEnabled,
+  loadDurableDrafts,
+  saveDurableDrafts,
+  setDraftPersistenceEnabled,
+} from "./drafts";
 import "./desktop.css";
 import {
   ArrowUp,
@@ -25,11 +35,16 @@ import {
   ChevronRight,
   Circle,
   CircleHelp,
+  Cloud,
   Code2,
   Command,
+  Briefcase,
+  Copy,
   Folder,
   FolderOpen,
   GitBranch,
+  GitFork,
+  History,
   LoaderCircle,
   MessageSquare,
   Moon,
@@ -44,6 +59,8 @@ import {
   Square,
   Sun,
   Terminal,
+  Timer,
+  Trash2,
   Workflow,
   X,
   Search,
@@ -51,6 +68,7 @@ import {
   Archive,
   Paperclip,
   Layers,
+  Eye,
 } from "lucide-react";
 import type {
   HistoryEntry,
@@ -114,6 +132,19 @@ export function App() {
   const promptHistory = useRef(new Map<string, string[]>());
   const [sessionQuery, setSessionQuery] = useState("");
   const [view, setView] = useState<"chat" | "git">("chat");
+  const [area, setArea] = useState<"code" | "work">("code");
+  const [codeScope, setCodeScope] = useState<"local" | "cloud">("local");
+  const [loopsOpen, setLoopsOpen] = useState(false);
+  const [subagentNav, setSubagentNav] = useState<{
+    parentId: string;
+    parentTitle: string;
+    childId: string;
+    childName: string;
+    childTask?: string | null;
+  } | null>(null);
+  const [durableDrafts, setDurableDrafts] = useState(() =>
+    isDraftPersistenceEnabled(),
+  );
   const [resourcesOpen, setResourcesOpen] = useState(false);
   const [palette, setPalette] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState("");
@@ -594,11 +625,17 @@ export function App() {
       preferences.motion === false ? "off" : "on";
   }, [preferences.motion]);
   useEffect(() => {
+    // Hydrate durable drafts once; in-memory drafts still work without opt-in.
+    const durable = loadDurableDrafts();
+    for (const [key, value] of durable) sessionDrafts.current.set(key, value);
+  }, []);
+  useEffect(() => {
     if (state?.session.id) {
       sessionDrafts.current.set(state.session.id, draft);
       attachmentDrafts.current.set(state.session.id, attachments);
+      if (durableDrafts) saveDurableDrafts(sessionDrafts.current);
     }
-  }, [draft, attachments, state?.session.id]);
+  }, [draft, attachments, state?.session.id, durableDrafts]);
   useEffect(() => {
     if (!palette || !commandModal.current) return;
     const modal = commandModal.current;
@@ -730,9 +767,13 @@ export function App() {
     if (stateRef.current) {
       sessionDrafts.current.set(stateRef.current.session.id, draft);
       attachmentDrafts.current.set(stateRef.current.session.id, attachments);
+      if (durableDrafts) saveDurableDrafts(sessionDrafts.current);
     }
     setProject(cwd);
     setView("chat");
+    setSubagentNav(null);
+    setArea("code");
+    setCodeScope("local");
     if (!gitBaselines.current.has(cwd)) {
       try {
         const status = await bridge?.git<any>("status", { projectPath: cwd });
@@ -1064,6 +1105,66 @@ export function App() {
       detail: "Access and appearance",
       action: () => setSettings(true),
     },
+    {
+      title: "Code workspace",
+      detail: "Local sessions and cloud sandboxes",
+      action: () => {
+        setArea("code");
+        setCodeScope("local");
+        setView("chat");
+      },
+    },
+    {
+      title: "Cloud workspace",
+      detail: "Vibe Code Web and Teleport",
+      action: () => {
+        setArea("code");
+        setCodeScope("cloud");
+      },
+    },
+    {
+      title: "Work workspace",
+      detail: "Hosted Mistral Work surface",
+      action: () => setArea("work"),
+    },
+    {
+      title: "Scheduled loops",
+      detail: "Create and manage loops for this session",
+      action: () => setLoopsOpen(true),
+    },
+    ...(state
+      ? [
+          {
+            title: "Fork this session",
+            detail: "Create an attached copy via session/fork",
+            action: () =>
+              void protect(async () => {
+                const result = await request<{ state: SessionState }>(
+                  "session/fork",
+                  {
+                    sourceSessionId: state.session.id,
+                    attach: true,
+                    idempotencyKey: crypto.randomUUID(),
+                  },
+                );
+                adopt(result.state);
+                await refreshRuntime(result.state.session.id);
+                await listSessions();
+              }),
+          },
+          {
+            title: "Mark session as seen",
+            detail: "Clear attention state",
+            action: () =>
+              void protect(async () => {
+                await request("session/markAsSeen", {
+                  sessionId: state.session.id,
+                });
+                await listSessions();
+              }),
+          },
+        ]
+      : []),
     ...sessions
       .filter((session) => session.cwd)
       .slice(0, 30)
@@ -1136,6 +1237,26 @@ export function App() {
           <span className="titlebar-project">
             {project ? basename(project) : "Local workspace"}
           </span>
+          <div className="titlebar-modes" role="tablist" aria-label="Code or Work">
+            <button
+              role="tab"
+              aria-selected={area === "code"}
+              className={area === "code" ? "active" : ""}
+              onClick={() => setArea("code")}
+              title="Code: local projects, cloud sandboxes, sessions and automations"
+            >
+              <Code2 size={13} /> Code
+            </button>
+            <button
+              role="tab"
+              aria-selected={area === "work"}
+              className={area === "work" ? "active" : ""}
+              onClick={() => setArea("work")}
+              title="Work: hosted Mistral Work surface (no local replica)"
+            >
+              <Briefcase size={13} /> Work
+            </button>
+          </div>
           <McpStatus
             runtime={runtime}
             onManage={() => setResourcesOpen(true)}
@@ -1334,20 +1455,88 @@ export function App() {
       <header className="workspace-header">
         <div>
           <div className="breadcrumbs">
-            <Code2 size={15} />
-            {project ? basename(project) : "Workspace"}
-            {state && (
+            {area === "work" ? <Briefcase size={15} /> : <Code2 size={15} />}
+            <button
+              className="breadcrumb-root"
+              title={project || "Workspace"}
+              onClick={() => {
+                setSubagentNav(null);
+                setArea("code");
+                setCodeScope("local");
+                setView("chat");
+              }}
+            >
+              {project ? basename(project) : "Workspace"}
+            </button>
+            {state && area === "code" && (
               <>
                 <ChevronRight size={12} />
                 <span>{state.session.title || "New session"}</span>
               </>
             )}
+            {subagentNav && (
+              <>
+                <ChevronRight size={12} />
+                <button
+                  className="breadcrumb-parent"
+                  onClick={() => setSubagentNav(null)}
+                  title={`Back to ${subagentNav.parentTitle}`}
+                >
+                  {subagentNav.parentTitle}
+                </button>
+                <ChevronRight size={12} />
+                <span aria-current="page">{subagentNav.childName}</span>
+              </>
+            )}
+            {area === "work" && (
+              <>
+                <ChevronRight size={12} />
+                <span>Work</span>
+              </>
+            )}
           </div>
           <small title={project}>
-            {project || "Choose a local project to begin"}
+            {subagentNav
+              ? `Subagent ${subagentNav.childId} · read-only · parent keeps working`
+              : project || "Choose a local project to begin"}
           </small>
         </div>
         <div className="header-actions">
+          {area === "code" && (
+            <>
+              <div className="workspace-modes" role="tablist" aria-label="Local or Cloud">
+                <button
+                  role="tab"
+                  aria-selected={codeScope === "local"}
+                  className={codeScope === "local" ? "active" : ""}
+                  onClick={() => {
+                    setCodeScope("local");
+                    setView("chat");
+                  }}
+                >
+                  Local
+                </button>
+                <button
+                  role="tab"
+                  aria-selected={codeScope === "cloud"}
+                  className={codeScope === "cloud" ? "active" : ""}
+                  onClick={() => setCodeScope("cloud")}
+                >
+                  <Cloud size={13} /> Cloud
+                </button>
+              </div>
+              <button
+                className={`workspace-tab ${loopsOpen ? "selected" : ""}`}
+                aria-pressed={loopsOpen}
+                disabled={!state}
+                title="Scheduled loops for this session (loops/*)"
+                onClick={() => setLoopsOpen((open) => !open)}
+              >
+                <Timer size={14} />
+                Loops
+              </button>
+            </>
+          )}
           <button
             className={`workspace-tab ${view === "git" ? "selected" : ""}`}
             aria-pressed={view === "git"}
@@ -1380,6 +1569,199 @@ export function App() {
           >
             {isDark ? <Sun size={17} /> : <Moon size={17} />}
           </button>
+          {state && (
+            <details className="session-menu">
+              <summary aria-label="Session actions">···</summary>
+              <div className="session-menu-items" role="menu">
+                <button
+                  role="menuitem"
+                  disabled={working || running}
+                  onClick={() =>
+                    void protect(async () => {
+                      const title = window.prompt(
+                        "Rename session",
+                        state.session.title || "",
+                      );
+                      if (!title || !title.trim()) return;
+                      await request("session/rename", {
+                        sessionId: state.session.id,
+                        title: title.trim().slice(0, 200),
+                      });
+                      await request("session/markAsSeen", {
+                        sessionId: state.session.id,
+                      }).catch(() => {});
+                      await reload();
+                      await listSessions();
+                    })
+                  }
+                >
+                  Rename
+                </button>
+                <button
+                  role="menuitem"
+                  disabled={working || running}
+                  onClick={() =>
+                    void protect(async () => {
+                      const result = await request<{ state: SessionState }>(
+                        "session/fork",
+                        {
+                          sourceSessionId: state.session.id,
+                          attach: true,
+                          idempotencyKey: crypto.randomUUID(),
+                        },
+                      );
+                      adopt(result.state);
+                      setDraft(
+                        sessionDrafts.current.get(result.state.session.id) || "",
+                      );
+                      await refreshRuntime(result.state.session.id);
+                      await listSessions();
+                      setNotice("Session forked by Vibe.");
+                    })
+                  }
+                >
+                  <GitFork size={13} /> Fork session
+                </button>
+                <button
+                  role="menuitem"
+                  disabled={working || running || !state.history?.length}
+                  onClick={() =>
+                    void protect(async () => {
+                      const firstId = state.history?.[0]?.id;
+                      const entryId = window.prompt(
+                        "Rewind to entry id (first entry prefilled). In-place is destructive; fork-rewind is safer.",
+                        firstId || "",
+                      );
+                      if (!entryId) return;
+                      const fork = window.confirm(
+                        "OK = fork-rewind (new session, keeps history). Cancel = in-place rewind (destructive).",
+                      );
+                      const result = await request<{ state: SessionState }>(
+                        "session/rewind",
+                        {
+                          sessionId: state.session.id,
+                          entryId,
+                          inplace: !fork,
+                        },
+                      );
+                      if (result.state) {
+                        if (!fork) {
+                          sessionCache.current.delete(state.session.id);
+                        }
+                        adopt(result.state);
+                        await refreshRuntime(result.state.session.id);
+                        await listSessions();
+                      }
+                    })
+                  }
+                >
+                  <History size={13} /> Rewind…
+                </button>
+                <button
+                  role="menuitem"
+                  disabled={working}
+                  onClick={() =>
+                    void protect(async () => {
+                      await request("session/markAsSeen", {
+                        sessionId: state.session.id,
+                      });
+                      await listSessions();
+                      setNotice("Session marked as seen.");
+                    })
+                  }
+                >
+                  <Eye size={13} /> Mark as seen
+                </button>
+                <button
+                  role="menuitem"
+                  disabled={working || running}
+                  onClick={() =>
+                    void protect(async () => {
+                      await request("session/compact", {
+                        sessionId: state.session.id,
+                      });
+                      await reload();
+                      setNotice("Session compaction requested.");
+                    })
+                  }
+                >
+                  Compact history
+                </button>
+                <button
+                  role="menuitem"
+                  disabled={working || running}
+                  onClick={() =>
+                    void protect(async () => {
+                      if (
+                        !window.confirm(
+                          "Stop this session? The transcript stays saved; running work ends.",
+                        )
+                      )
+                        return;
+                      await request("session/stop", {
+                        sessionId: state.session.id,
+                      });
+                      sessionCache.current.delete(state.session.id);
+                      adopt(null);
+                      setRuntime(null);
+                      await listSessions();
+                    })
+                  }
+                >
+                  Stop session
+                </button>
+                <button
+                  role="menuitem"
+                  disabled={working || running}
+                  onClick={() =>
+                    void protect(async () => {
+                      if (
+                        !window.confirm(
+                          "Delete this saved session? This removes it from Vibe storage. Stop it first if attached.",
+                        )
+                      )
+                        return;
+                      const id = state.session.id;
+                      try {
+                        await request("session/stop", { sessionId: id });
+                      } catch {
+                        /* Already detached: delete the stored session. */
+                      }
+                      sessionCache.current.delete(id);
+                      await request("session/delete", { sessionId: id });
+                      adopt(null);
+                      setRuntime(null);
+                      await listSessions();
+                    })
+                  }
+                >
+                  <Trash2 size={13} /> Delete saved session
+                </button>
+                <button
+                  role="menuitem"
+                  disabled={!draft && !state.history?.length}
+                  onClick={() => {
+                    const blob = new Blob(
+                      [
+                        (state.history || [])
+                          .map((e) => `## ${e.type} ${e.id}\n${text(e)}`)
+                          .join("\n\n"),
+                      ],
+                      { type: "text/markdown" },
+                    );
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = `vibe-session-${state.session.id.slice(0, 8)}.md`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  }}
+                >
+                  <Copy size={13} /> Export transcript
+                </button>
+              </div>
+            </details>
+          )}
           <button
             className={`icon-button ${terminalOpen ? "selected" : ""}`}
             aria-label="Toggle shell"
@@ -1429,21 +1811,44 @@ export function App() {
                   <span>{cached.session.title || "New session"}</span>
                 </button>
                 <button
-                  aria-label={`Close session ${cached.session.title || "New session"}`}
+                  aria-label={`Close session ${cached.session.title || "New session"} (keeps session running)`}
+                  title="Close tab — the session keeps running and stays in the project list. Use Stop to end it."
                   disabled={working}
                   onClick={() =>
                     void protect(async () => {
-                      if (cached.turns?.at(-1)?.status === "in_progress")
+                      const live =
+                        sessionCache.current.get(cached.session.id) ?? cached;
+                      if (live.turns?.at(-1)?.status === "in_progress")
                         throw new Error(
-                          "Stop this turn before closing its session.",
+                          "Stop this turn before closing its tab. Closing never interrupts silently.",
                         );
-                      await request("session/stop", {
-                        sessionId: cached.session.id,
-                      });
+                      if (stateRef.current?.session.id === cached.session.id) {
+                        sessionDrafts.current.set(cached.session.id, draft);
+                        if (durableDrafts) saveDurableDrafts(sessionDrafts.current);
+                      }
+                      const isEmpty =
+                        !(live.history?.length || 0) &&
+                        !(live.activeCallbacks?.length || 0);
                       sessionCache.current.delete(cached.session.id);
                       setBackgroundRevision((revision) => revision + 1);
                       if (stateRef.current?.session.id === cached.session.id)
                         adopt(null);
+                      if (isEmpty) {
+                        // An empty tab holds no work: stop it so crash-recovery
+                        // checks see a single owner. Non-empty tabs stay running.
+                        try {
+                          await request("session/stop", {
+                            sessionId: cached.session.id,
+                          });
+                        } catch {
+                          /* Already detached: nothing to stop. */
+                        }
+                        setNotice("Empty tab closed.");
+                      } else {
+                        setNotice(
+                          "Tab closed. The session keeps running — reopen it from the project list or stop it explicitly.",
+                        );
+                      }
                     })
                   }
                 >
@@ -1571,7 +1976,26 @@ export function App() {
             </div>
           </section>
         )}
-        {view === "git" ? (
+        {subagentNav ? (
+          <SubagentView
+            parentTitle={subagentNav.parentTitle}
+            childId={subagentNav.childId}
+            childName={subagentNav.childName}
+            childTask={subagentNav.childTask}
+            onBack={() => setSubagentNav(null)}
+          />
+        ) : area === "work" ? (
+          <WorkPanel onClose={() => setArea("code")} />
+        ) : codeScope === "cloud" && area === "code" ? (
+          <CloudPanel
+            sessionId={state?.session.id ?? null}
+            projectPath={project}
+            activeModel={runtime?.config.activeModel.alias ?? null}
+            hasApiKey={Boolean(setup?.hasApiKey)}
+            disabled={working || running}
+            onClose={() => setCodeScope("local")}
+          />
+        ) : view === "git" ? (
           <PanelBoundary name="Git workspace" onClose={() => setView("chat")}>
             <Suspense
               fallback={
@@ -2078,7 +2502,7 @@ export function App() {
             </div>
           </>
         )}
-        {terminalOpen && (
+        {terminalOpen && !subagentNav && (
           <section className="shell-panel">
             <header>
               <span>
@@ -2270,23 +2694,46 @@ export function App() {
                               {operation.state.error.message}
                             </p>
                           )}
-                          <button
-                            className="secondary"
-                            disabled={working}
-                            onClick={() =>
-                              void protect(async () => {
-                                const result = await request<{
-                                  state: SessionState;
-                                }>("session/read", {
-                                  sessionId: child.id,
-                                  history: { limit: 200 },
+                          <div className="button-row">
+                            <button
+                              className="secondary"
+                              aria-label={`Open subagent ${child.name}`}
+                              title="Open the live subagent conversation. The parent keeps working."
+                              onClick={() => {
+                                if (!state) return;
+                                setSubagentNav({
+                                  parentId: state.session.id,
+                                  parentTitle:
+                                    state.session.title || "Parent session",
+                                  childId: child.id,
+                                  childName: child.name,
+                                  childTask: task ? String(task) : null,
                                 });
-                                setChildTranscript(result.state);
-                              })
-                            }
-                          >
-                            Inspect subagent
-                          </button>
+                                // Mark parent as seen without taking child control.
+                                void request("session/markAsSeen", {
+                                  sessionId: state.session.id,
+                                }).catch(() => {});
+                              }}
+                            >
+                              Open subagent
+                            </button>
+                            <button
+                              className="secondary"
+                              onClick={() =>
+                                void protect(async () => {
+                                  const result = await request<{
+                                    state: SessionState;
+                                  }>("session/read", {
+                                    sessionId: child.id,
+                                    history: { limit: 200 },
+                                  });
+                                  setChildTranscript(result.state);
+                                })
+                              }
+                            >
+                              Inspect subagent
+                            </button>
+                          </div>
                         </div>
                       </div>
                     );
@@ -2551,6 +2998,22 @@ export function App() {
                 <Entry key={entry.id} entry={entry} />
               ))}
             </div>
+          </section>
+        </div>
+      )}
+      {loopsOpen && state && (
+        <div className="modal-backdrop">
+          <section
+            className="loops-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Scheduled loops"
+          >
+            <LoopsPanel
+              sessionId={state.session.id}
+              disabled={working || running}
+              onClose={() => setLoopsOpen(false)}
+            />
           </section>
         </div>
       )}
@@ -2864,6 +3327,25 @@ export function App() {
                     Decorative motion
                     <small>
                       System reduced-motion preferences always take priority.
+                    </small>
+                  </span>
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={durableDrafts}
+                    onChange={(event) => {
+                      const enabled = event.target.checked;
+                      setDurableDrafts(enabled);
+                      setDraftPersistenceEnabled(enabled);
+                      if (enabled) saveDurableDrafts(sessionDrafts.current);
+                    }}
+                  />
+                  <span>
+                    Keep unsent drafts after restart
+                    <small>
+                      Opt-in local storage only. Session history is never
+                      journaled here.
                     </small>
                   </span>
                 </label>

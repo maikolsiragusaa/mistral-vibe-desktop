@@ -1,7 +1,10 @@
 # Next increments
 
-The 0.2 increment adds the Windows titlebar, model picker, management window,
-Git workflow, browser-auth adapter, concurrent sessions and local observability.
+The 0.3.0-M1 increment adds Code/Work + Local/Cloud foundation, live subagent
+navigation, tab-close vs stop separation, official session fork/rewind/rename/
+markAsSeen/compact/delete, durable opt-in drafts, loops GUI and Cloud panels
+through projectLinks/vibeCode/teleport with preflight. The backend allowlist
+now covers ~60 official methods with pool isolation.
 The [capability matrix](capabilities.md) records their exact boundaries.
 
 | Priority | Next increment                             | Acceptance                                                                                                                                              |
@@ -13,12 +16,14 @@ The [capability matrix](capabilities.md) records their exact boundaries.
 | 2        | Managed worktree navigation                | Navigate held/dirty/unpushed worktrees through upstream APIs with appropriate user decisions.                                                           |
 | 2        | Skill registry lifecycle                   | Import, alias, update and remove skills through existing upstream methods with authenticated end-to-end coverage.                                       |
 | 2        | Local MCP setup                            | Add a structured stdio editor that preserves credential-bearing configuration and validates Windows command forms.                                      |
-| 2        | Durable unsent drafts                      | Define opt-in local retention and recovery without creating a second session journal.                                                                   |
+| 2        | Durable unsent drafts (M1 done)            | Opt-in renderer localStorage, Settings toggle, no session journal. Verify across full restart.                                                          |
+| 2        | Session fork/rewind UI polish              | Fork-rewind vs in-place confirmation is shipped; add entry picker and restore-files preview.                                                             |
+| 2        | Cloud Teleport end-to-end                  | Git-repo preflight is shipped; verify with an authorized Pro/Team account without claiming bidirectional sync.                                           |
 | 3        | Signed distribution and updates            | Use an authorized signing identity and a reviewed update channel.                                                                                       |
 | 3        | Editor handoff and notifications           | Reuse ACP/editor integrations and explicit notification preferences.                                                                                    |
 
-Cloud teleport, hosted Work/Chat and automatic releases remain outside the
-current local desktop increment. Work continues on the existing branch and PR;
-no release or main-branch merge is performed by these build checks.
-The exact upstream candidates and acceptance cases are recorded in
+Hosted Work scheduled tasks remain an explicit official-surface link, not a
+local replica. No private endpoints are used. Work continues on the existing
+branch and PR; no release or main-branch merge is performed by these build
+checks. The exact upstream candidates and acceptance cases are recorded in
 [upstream integration follow-ups](upstream-gaps.md).

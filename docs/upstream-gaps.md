@@ -48,7 +48,24 @@ context occupancy and organization allowance should retain separate semantics.
 ## Desktop backlog boundaries
 
 Skill registry lifecycle and managed worktree actions already exist upstream;
-their missing graphical actions are desktop work. Browser sign-in uses the
-existing upstream controller through a minimal owned adapter. Numeric account
-allowances are not exposed by `account/read`, so official dashboards remain the
-account view. No upstream issue or public message is submitted automatically.
+their missing graphical actions are desktop work. The 0.3.0-M1 backend already
+validates and routes skills/import|setAlias|setVersion|setLatest|remove|
+convertLocal|versions|updates, worktrees/remove|reap|prune and mcp/*|tools/list;
+their full GUI remains M2–M4. Browser sign-in uses the existing upstream
+controller through a minimal owned adapter. Numeric account allowances are not
+exposed by `account/read`, so official dashboards remain the account view.
+No upstream issue or public message is submitted automatically.
+
+## 0.3.0-M1 live conformance (13 Oct 2026, Vibe 2.26.1, no model calls)
+
+- `loops/list` → `{"loops":[]}`; `loops/create` → loop with intervalSeconds and
+  nextFireAt; `loops/clear` OK. Loops are session-scoped and pause when the
+  backend stops.
+- `session/markAsSeen` OK; `session/rename` OK; `session/turns/list` OK;
+  `skills/versions|updates`, `mcp/refresh`, `session/settings/update` OK.
+- `review/state`, `stats/read`, `diagnostics/list`, `tools/list` →
+  `Method not found` on Unified. `session/compact` → not implemented upstream.
+- `vibeCode/projects/open` without a Git repo → "Teleport requires a git
+  repository". `projectLinks/list` OK session-less.
+- Hosted Work scheduled tasks have no public app-server RPC; the desktop links
+  to Tasks → Scheduled and docs instead of mirroring remote tasks.

@@ -1065,3 +1065,123 @@
     transition: none;
   }
 }
+
+/* M4: skills lifecycle, stdio editor, tools/layers/ACP panels. */
+.rw-button.rw-small {
+  padding: 5px 10px;
+  font-size: 10px;
+}
+.rw-button.rw-danger {
+  color: #b3261e;
+  border-color: #b3261e55;
+}
+.rw-dialog-inline {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin-top: 9px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+}
+.rw-form-row {
+  display: flex;
+  gap: 9px;
+  flex-wrap: wrap;
+}
+.rw-form-row > label {
+  flex: 1 1 140px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.rw-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.rw-field input,
+.rw-field textarea,
+.rw-form-row input,
+.rw-form-row select,
+.rw-dialog-inline select {
+  font-size: 11px;
+  padding: 6px 8px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--bg, inherit);
+  color: inherit;
+}
+.rw-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 10px;
+  line-height: 1.5;
+}
+.rw-check input {
+  margin-top: 2px;
+}
+.rw-consent {
+  font-weight: 650;
+}
+.rw-summary {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--rail);
+  font-size: 10px;
+}
+.rw-summary strong {
+  display: block;
+  margin-bottom: 3px;
+}
+.rw-problems {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 10px;
+  color: #9c5c05;
+}
+.rw-stdio-list,
+.rw-layers,
+.rw-tools,
+.rw-acp {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.rw-layer-list,
+.rw-tool-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.rw-layer-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: var(--rail);
+  font-size: 10px;
+}
+.rw-layer-list small {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.rw-tools .rw-tool-row {
+  align-items: flex-start;
+}
+.rw-tool-desc {
+  display: block;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}

@@ -1,5 +1,6 @@
 import { test, expect, _electron, type Page } from "@playwright/test";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { createServer, type Server } from "node:http";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -188,6 +189,7 @@ test("real desktop keeps Git, configured models, approvals and sessions grounded
   let toolProvider: ChildProcess | undefined;
   let subagentProvider: ChildProcess | undefined;
   let mcpProcess: ChildProcess | undefined;
+  let previewServer: Server | undefined;
   let page: Page | undefined;
   const pageErrors: string[] = [];
   try {
@@ -1029,6 +1031,10 @@ test("real desktop keeps Git, configured models, approvals and sessions grounded
     await page.getByRole("button", { name: "Git", exact: true }).click();
     const gitWorkspace = page.getByRole("region", { name: "Git workspace" });
     await expect(gitWorkspace).toBeVisible();
+    // The modular workspace renders every view after the refactor.
+    for (const tabName of ["Changes", "Files", "History", "Worktrees", "Pull requests"]) {
+      await expect(gitWorkspace.getByRole("tab", { name: tabName, exact: true })).toBeVisible();
+    }
     await expect(
       gitWorkspace.getByRole("tab", { name: /Changes/ }),
     ).toBeVisible();
@@ -1049,6 +1055,10 @@ test("real desktop keeps Git, configured models, approvals and sessions grounded
     await gitWorkspace
       .getByRole("button", { name: "Stage README.md", exact: true })
       .click();
+    // Selection survives the status refresh that follows every mutation.
+    await expect(
+      gitWorkspace.getByRole("button", { name: "Unstage README.md", exact: true }),
+    ).toBeVisible();
     await expect(diffRegion).toContainText("A pre-existing local edit.");
     await gitWorkspace
       .getByRole("button", { name: "Unstage README.md", exact: true })
@@ -1102,10 +1112,136 @@ test("real desktop keeps Git, configured models, approvals and sessions grounded
     await gitWorkspace
       .getByRole("tab", { name: "Worktrees", exact: true })
       .click();
-    await expect(gitWorkspace).toContainText(
-      "Worktrees are listed read-only here",
-    );
+    // The worktree manager shows real checkout state and safe-only actions,
+    // not the old read-only note.
+    await expect(gitWorkspace.getByRole("heading", { name: "Worktrees" })).toBeVisible();
+    await expect(gitWorkspace).toContainText("main");
     await expect(gitWorkspace).toContainText(workspace);
+    await expect(gitWorkspace).toContainText("Current");
+    await expect(
+      gitWorkspace.getByRole("button", { name: "New worktree", exact: true }),
+    ).toBeVisible();
+    await expect(
+      gitWorkspace.getByRole("button", { name: "Prune stale", exact: true }),
+    ).toBeVisible();
+    await expect(gitWorkspace).toContainText("safe-only");
+    await capture(page, "worktrees");
+
+    // Creating a worktree from the UI must not contaminate the main checkout:
+    // no new debris in Changes and no HEAD move.
+    const headBeforeWorktree = runGit(workspace, "rev-parse", "HEAD");
+    await gitWorkspace
+      .getByRole("button", { name: "New worktree", exact: true })
+      .click();
+    await gitWorkspace.getByLabel("New branch worktree").fill("ui-created-branch");
+    await gitWorkspace
+      .getByRole("button", { name: "Create", exact: true })
+      .click();
+    await expect(gitWorkspace).toContainText("ui-created-branch");
+    await expect(gitWorkspace).toContainText("app-managed space");
+    expect(runGit(workspace, "rev-parse", "HEAD")).toBe(headBeforeWorktree);
+    const createdBlock = runGit(workspace, "worktree", "list", "--porcelain")
+      .split("\n\n")
+      .find((block) => block.includes("branch refs/heads/ui-created-branch"));
+    const createdPath = createdBlock
+      ?.split("\n")
+      .find((line) => line.startsWith("worktree "))
+      ?.slice("worktree ".length);
+    expect(createdPath).toBeTruthy();
+    const mainStatusAfterCreate = runGit(workspace, "status", "--porcelain")
+      .split("\n")
+      .filter(Boolean);
+    expect(mainStatusAfterCreate.some((line) => line.includes(".worktrees"))).toBe(false);
+
+    // A dirty worktree cannot be removed: the safe-only gate refuses with a
+    // reason and the checkout survives.
+    await fs.writeFile(
+      path.join(createdPath!, "README.md"),
+      "Initial version for the local desktop fixture.\nA UI dirty change.\n",
+    );
+    const createdRow = gitWorkspace
+      .locator(".git-workspace__worktree-item")
+      .filter({ hasText: "ui-created-branch" });
+    await expect(createdRow).toContainText("Dirty");
+    page.once("dialog", (dialog) => void dialog.accept());
+    await createdRow.getByRole("button", { name: "Remove", exact: true }).click();
+    await expect(gitWorkspace).toContainText("uncommitted changes");
+    expect(runGit(workspace, "worktree", "list", "--porcelain")).toContain(
+      "ui-created-branch",
+    );
+    await capture(page, "worktree-blocked");
+    await gitWorkspace.getByRole("tab", { name: "Files", exact: true }).click();
+    await expect(gitWorkspace.getByRole("heading", { name: "Files" })).toBeVisible();
+    const tree = gitWorkspace.getByLabel("Folder tree");
+    await expect(tree).toContainText("README.md");
+    await expect(gitWorkspace).toContainText("Modified");
+    await tree.getByRole("button", { name: /README\.md/ }).first().click();
+    await expect(gitWorkspace.getByLabel("File preview")).toContainText(
+      "A pre-existing local edit.",
+    );
+    await capture(page, "file-preview");
+
+    // Local web previews open only for explicit loopback URLs, isolated from
+    // the app: no preload bridge, no Node, no escape from the origin.
+    previewServer = createServer((req, res) => {
+      if (req.url === "/go") {
+        res.writeHead(302, { Location: "https://example.com/" });
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end("<!doctype html><title>Fixture</title><h1>UI preview fixture marker</h1>");
+    });
+    await new Promise<void>((resolve) => previewServer!.listen(0, "127.0.0.1", resolve));
+    const previewPort = (previewServer!.address() as { port: number }).port;
+    const previewOrigin = `http://127.0.0.1:${previewPort}`;
+    await gitWorkspace.getByLabel("Local preview URL").fill("https://example.com/");
+    await expect(gitWorkspace).toContainText("Only localhost");
+    await gitWorkspace.getByLabel("Local preview URL").fill(`${previewOrigin}/`);
+    await gitWorkspace.getByRole("button", { name: "Open preview", exact: true }).click();
+    await expect(gitWorkspace).toContainText(`Previewing ${previewOrigin}/`);
+    const isolation = await desktop!.evaluate(({ BrowserWindow }: any) => {
+      const preview = (BrowserWindow.getAllWindows() as any[]).find(
+        (win) => win.getTitle() === "Local preview",
+      );
+      if (!preview) return { found: false as const };
+      return (async () => ({
+        found: true as const,
+        url: preview.webContents.getURL() as string,
+        vibe: (await preview.webContents.executeJavaScript("typeof window.vibe")) as string,
+        nodeRequire: (await preview.webContents.executeJavaScript(
+          "typeof window.require",
+        )) as string,
+      }))();
+    });
+    expect(isolation.found).toBe(true);
+    if (isolation.found) {
+      expect(isolation.url.startsWith(previewOrigin)).toBe(true);
+      expect(isolation.vibe).toBe("undefined");
+      expect(isolation.nodeRequire).toBe("undefined");
+    }
+    await capture(page, "web-preview");
+
+    // A redirect to a public origin never leaves the app: it is blocked and
+    // the preview window keeps a loopback or explanatory page instead.
+    await gitWorkspace.getByLabel("Local preview URL").fill(`${previewOrigin}/go`);
+    await gitWorkspace.getByRole("button", { name: "Open preview", exact: true }).click();
+    await expect(gitWorkspace).toContainText(`Previewing ${previewOrigin}/go`);
+    await expect
+      .poll(
+        async () =>
+          desktop!.evaluate(
+            ({ BrowserWindow }: any) =>
+              ((BrowserWindow.getAllWindows() as any[]).find(
+                (win) => win.getTitle() === "Local preview",
+              )?.webContents.getURL() as string) || "",
+          ),
+        { timeout: 15_000 },
+      )
+      .toMatch(/^data:text\/html/);
+    await gitWorkspace.getByRole("button", { name: "Stop", exact: true }).click();
+    await expect(gitWorkspace.getByText(/Previewing/)).toHaveCount(0);
+
     await gitWorkspace
       .getByRole("tab", { name: "Pull requests", exact: true })
       .click();
@@ -1132,6 +1268,14 @@ test("real desktop keeps Git, configured models, approvals and sessions grounded
       page.getByRole("button", { name: "Inspect subagent", exact: true }),
     ).toBeVisible({ timeout: 30_000 });
     await capture(page, "subagent-running");
+    // Git navigation never touches sessions: opening the workspace mid-turn
+    // leaves the running turn alone.
+    await page.getByRole("button", { name: "Git", exact: true }).click();
+    await expect(page.getByRole("region", { name: "Git workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Git", exact: true }).click();
+    await expect(
+      page.getByRole("button", { name: "Inspect subagent", exact: true }),
+    ).toBeVisible({ timeout: 30_000 });
     await expect(
       page.getByRole("button", { name: "Send prompt", exact: true }),
     ).toBeVisible({ timeout: 30_000 });
@@ -1341,6 +1485,10 @@ test("real desktop keeps Git, configured models, approvals and sessions grounded
     safeKill(subagentProvider);
     safeKill(mcpProcess);
     safeKill(plainProvider);
+    if (previewServer) {
+      await new Promise<void>((resolve) => previewServer!.close(() => resolve()));
+      previewServer = undefined;
+    }
     if (
       path
         .resolve(root)

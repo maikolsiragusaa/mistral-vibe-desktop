@@ -4,6 +4,7 @@ import { createServer, type Server } from "node:http";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { launchDesktop } from "./launch-desktop";
 
 // The M2.1 worktree/preview coverage adds minutes of real interaction
 // (creation, removal gate, isolated window, redirect block) on top of the

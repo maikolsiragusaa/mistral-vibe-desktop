@@ -852,6 +852,25 @@ export class VibeBackend extends EventEmitter {
     return params;
   }
 
+  validateForkSourceForPool(rawParams) {
+    const params = this.#validateParams("session/fork", rawParams);
+    const entry = this.knownSessions.get(params.sourceSessionId);
+    if (entry?.readOnlyChild)
+      throw new Error(
+        "Subagent sessions are read-only and remain controlled by their parent",
+      );
+    if (
+      !entry?.allowedRoots.some((root) =>
+        this.authorizedProjects.has(stablePathKey(root)),
+      )
+    ) {
+      throw new Error(
+        "List sessions for a chosen project before forking one",
+      );
+    }
+    return params;
+  }
+
   async chooseProject() {
     await this.#loadPreferences();
     const window = this.getWindow();

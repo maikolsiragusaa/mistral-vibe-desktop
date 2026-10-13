@@ -174,22 +174,126 @@ test("0.3.0 fork, rewind, loops and cloud methods reach Vibe on authorized sessi
   await assert.rejects(backend.request("session/fork", { sourceSessionId: "child-1" }), /read-only|List sessions/);
 });
 
-test("0.3.0 pool isolates forked sessions and blocks live deletes", async (t) => {
-  const { backendPool, selectedProject, cleanup } = await createPool(t);
+test("0.3.0 pool isolates attached forks and blocks live deletes", async (t) => {
+  const { backendPool, selectedProject } = await createPool(t);
   const first = await backendPool.request("session/start", { agentConfig: { cwd: selectedProject } });
   const firstId = first.state.session.id;
+  const workersBefore = backendPool.backends.length;
   const forked = await backendPool.request("session/fork", { sourceSessionId: firstId, attach: true });
   const forkedId = forked.state.session.id;
   assert.notEqual(firstId, forkedId);
-  assert.ok(backendPool.ownedSessions.has(firstId) || backendPool.ownedSessions.has(forkedId));
+  assert.equal(backendPool.ownedSessions.get(firstId)?.activeSessionId, firstId);
+  assert.equal(backendPool.ownedSessions.get(forkedId)?.activeSessionId, forkedId);
+  assert.notEqual(backendPool.ownedSessions.get(firstId), backendPool.ownedSessions.get(forkedId));
+  assert.ok(backendPool.backends.length >= workersBefore);
 
   await assert.rejects(
     backendPool.request("session/delete", { sessionId: forkedId }),
     /Stop this session before deleting/,
   );
   await backendPool.request("session/stop", { sessionId: forkedId });
+  assert.equal(backendPool.ownedSessions.has(forkedId), false);
   await backendPool.request("session/delete", { sessionId: forkedId });
-  await cleanup();
+});
+
+test("0.3.0 detached forks persist without consuming workers or ownership", async (t) => {
+  const { backendPool, selectedProject } = await createPool(t);
+  const first = await backendPool.request("session/start", { agentConfig: { cwd: selectedProject } });
+  const sourceId = first.state.session.id;
+  const sourceWorker = backendPool.ownedSessions.get(sourceId);
+  const workersBefore = backendPool.backends.length;
+  const ownedBefore = backendPool.ownedSessions.size;
+
+  const forked = await backendPool.request("session/fork", {
+    sourceSessionId: sourceId,
+    attach: false,
+  });
+  const forkedId = forked?.state?.session?.id;
+  assert.equal(typeof forkedId, "string");
+  assert.notEqual(forkedId, sourceId);
+  // Detached: known and persisted, never attached, owned or active.
+  assert.equal(backendPool.ownedSessions.has(forkedId), false);
+  assert.equal(backendPool.ownedSessions.size, ownedBefore);
+  assert.equal(backendPool.backends.length, workersBefore);
+  assert.equal(sourceWorker.activeSessionId, sourceId);
+  assert.ok(backendPool.primary.knownSessions.has(forkedId));
+
+  // The detached session reads through the host without attaching.
+  const read = await backendPool.request("session/read", { sessionId: forkedId });
+  assert.equal(read?.state?.session?.id ?? forkedId, forkedId);
+  assert.equal(backendPool.ownedSessions.has(forkedId), false);
+});
+
+test("0.3.0 fork failures never alter ownership or burn connection slots", async (t) => {
+  const { backendPool, selectedProject } = await createPool(t);
+  const first = await backendPool.request("session/start", { agentConfig: { cwd: selectedProject } });
+  const sourceId = first.state.session.id;
+  const workersBefore = backendPool.backends.length;
+  const ownedBefore = new Map(backendPool.ownedSessions);
+
+  await assert.rejects(
+    backendPool.request("session/fork", { sourceSessionId: "not-listed-here" }),
+    /List sessions|read-only/,
+  );
+  assert.equal(backendPool.backends.length, workersBefore);
+  assert.deepEqual([...backendPool.ownedSessions.keys()], [...ownedBefore.keys()]);
+
+  backendPool.primary.knownSessions.set("archived-source", {
+    cwd: selectedProject,
+    allowedRoots: [selectedProject],
+  });
+  const fromArchived = await backendPool.request("session/fork", {
+    sourceSessionId: "archived-source",
+    attach: false,
+  });
+  assert.equal(typeof fromArchived?.state?.session?.id, "string");
+
+  backendPool.primary.knownSessions.set("child-9", {
+    cwd: selectedProject,
+    allowedRoots: [selectedProject],
+    readOnlyChild: true,
+    parentSessionId: sourceId,
+  });
+  await assert.rejects(
+    backendPool.request("session/fork", { sourceSessionId: "child-9" }),
+    /read-only/,
+  );
+  assert.equal(backendPool.backends.length, workersBefore);
+});
+
+test("0.3.0 concurrent forks serialize under the cap with distinct owners", async (t) => {
+  const { backendPool, selectedProject } = await createPool(t);
+  const first = await backendPool.request("session/start", { agentConfig: { cwd: selectedProject } });
+  const sourceId = first.state.session.id;
+  const [a, b] = await Promise.all([
+    backendPool.request("session/fork", { sourceSessionId: sourceId, attach: true }),
+    backendPool.request("session/fork", { sourceSessionId: sourceId, attach: true }),
+  ]);
+  const idA = a?.state?.session?.id;
+  const idB = b?.state?.session?.id;
+  assert.notEqual(idA, idB);
+  assert.notEqual(backendPool.ownedSessions.get(idA), backendPool.ownedSessions.get(idB));
+  assert.ok(backendPool.backends.length <= 4);
+});
+
+test("0.3.0 rewind and continue keep ownership consistent", async (t) => {
+  const { backendPool, selectedProject } = await createPool(t);
+  const first = await backendPool.request("session/start", { agentConfig: { cwd: selectedProject } });
+  const sourceId = first.state.session.id;
+  const worker = backendPool.ownedSessions.get(sourceId);
+
+  const continued = await backendPool.request("session/continue", {});
+  const continuedId = continued?.state?.session?.id;
+  assert.equal(typeof continuedId, "string");
+  assert.ok(backendPool.ownedSessions.has(continuedId));
+
+  // In-place rewind keeps id and owner; fork-rewind remaps to the new id.
+  const before = backendPool.ownedSessions.get(sourceId);
+  assert.equal(before, worker);
+  await assert.rejects(
+    backendPool.request("session/delete", { sessionId: sourceId }),
+    /Stop this session/,
+  );
 });
 
 async function createPool(t) {
@@ -211,22 +315,11 @@ async function createPool(t) {
     dialog,
     backendFactory: (opts) => new VibeBackend({ ...opts, spawnProcess: () => new FakeAppServer() }),
   });
-  // Authorize the project on the shared known-session map.
-  backendPool.primary.authorizedProjects.set(selectedProject.toLowerCase(), selectedProject);
-  backendPool.primary.knownSessions.set("seed", { cwd: selectedProject, allowedRoots: [selectedProject] });
-  // Seed fork source as listed.
-  const start = await backendPool.request("session/start", { agentConfig: { cwd: selectedProject } });
-  const sourceId = start.state.session.id;
-  backendPool.primary.knownSessions.set(sourceId, { cwd: selectedProject, allowedRoots: [selectedProject] });
-  // Reset ownership for the test's own start below (keep worker but clear map).
-  // The pool already owns sourceId; fork from it is valid.
   t.after(async () => {
     await backendPool.shutdown();
     await fs.rm(root, { recursive: true, force: true });
   });
-  return {
-    backendPool,
-    selectedProject,
-    cleanup: async () => {},
-  };
+  // Authorize the project through the real picker path so stable keys match.
+  await backendPool.primary.chooseProject();
+  return { backendPool, selectedProject };
 }

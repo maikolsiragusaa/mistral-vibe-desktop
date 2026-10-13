@@ -69,7 +69,11 @@ class Handler(BaseHTTPRequestHandler):
                 default=-1,
             )
             last_user_text = json.dumps(messages[last_user_index].get("content", "")) if last_user_index >= 0 else ""
-            if subagent_scenario and "Inspect the local fixture and report a short summary." in last_user_text:
+            try:
+                subagent_count = max(1, min(int(os.environ.get("TEST_PROVIDER_SUBAGENT_COUNT", "1")), 5))
+            except ValueError:
+                subagent_count = 1
+            if subagent_scenario and "Inspect the local fixture" in last_user_text:
                 response_text = "Local subagent inspected the fixture."
             elif any(
                 isinstance(message, dict) and message.get("role") == "tool"
@@ -97,22 +101,33 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 if tool_name:
                     content = "Written by the isolated Vibe fixture.\n"
+                    if subagent_scenario:
+                        names = [f"fixture-explorer-{index + 1}" for index in range(subagent_count)]
+                        spawns = " ".join(
+                            f"await tools.subagent.spawn({{agentName: '{name}', "
+                            f"message: 'Inspect the local fixture {name} and report a short summary.'}});"
+                            for name in names
+                        )
+                        waits = " ".join(
+                            f"results.push(await tools.subagent.wait({{agentName: '{name}', "
+                            f"timeoutMs: 60000}}));"
+                            for name in names
+                        )
+                        code = (
+                            "async function main() { const results = []; "
+                            f"{spawns} {waits} "
+                            "return JSON.stringify(results).slice(0,2000); }"
+                        )
+                        tool_arguments: object = {"code": code}
+                    else:
+                        tool_arguments = {"path": target, "content": content}
                     tool_call = {
                         "index": 0,
                         "id": "call-vibe-desktop-fixture-tool",
                         "type": "function",
                         "function": {
                             "name": tool_name,
-                            "arguments": json.dumps(
-                                {
-                                    "code": "async function main() { "
-                                    "await tools.subagent.spawn({agentName: 'fixture-explorer', "
-                                    "message: 'Inspect the local fixture and report a short summary.'}); "
-                                    "return await tools.subagent.wait({agentName: 'fixture-explorer', "
-                                    "timeoutMs: 30000}); }"
-                                } if subagent_scenario else {"path": target, "content": content},
-                                separators=(",", ":"),
-                            ),
+                            "arguments": json.dumps(tool_arguments, separators=(",", ":")),
                         },
                     }
         self.send_response(200)

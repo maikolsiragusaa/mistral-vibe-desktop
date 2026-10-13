@@ -85,12 +85,6 @@ export class VibeBackendPool extends EventEmitter {
     const sessionId = params?.sessionId ?? params?.sourceSessionId;
     const owner =
       typeof sessionId === "string" ? this.ownedSessions.get(sessionId) : null;
-    // Fork sources are tracked by sourceSessionId; the new session gets its own worker.
-    const forkOwner =
-      method === "session/fork" && typeof params?.sourceSessionId === "string"
-        ? this.ownedSessions.get(params.sourceSessionId)
-        : null;
-    void forkOwner;
     if (method === "session/stop") {
       if (!owner) throw new Error("This session is not attached to this app");
       try {
@@ -210,22 +204,55 @@ export class VibeBackendPool extends EventEmitter {
         throw new Error(
           "Subagent sessions are read-only and remain controlled by their parent",
         );
+      // Validate the source is listed before consuming a worker slot: an
+      // unlisted source must fail without growing the backend list.
+      this.primary.validateForkSourceForPool(params);
+    }
+    // Upstream contract (2.26.1): attach:false persists a known session but
+    // attaches nothing (backend is shut down server-side, session_attached=false).
+    // It must not consume a worker slot or appear in ownedSessions.
+    if (params?.attach === false) {
+      const result = await this.primary.request("session/fork", params);
+      const nextId =
+        result?.state?.session?.id ?? result?.session?.id ?? result?.sessionId;
+      if (typeof nextId !== "string" || !nextId)
+        throw new Error(
+          "Vibe forked a session without returning its session id",
+        );
+      if (this.ownedSessions.has(nextId))
+        throw new Error(
+          "Vibe returned a session id already attached to this app",
+        );
+      return result;
     }
     const worker = this.#allocateBackend();
-    const result = await worker.request("session/fork", params);
-    const nextId =
-      result?.state?.session?.id ?? result?.session?.id ?? result?.sessionId;
-    if (typeof nextId !== "string" || !nextId)
-      throw new Error(
-        "Vibe forked a session without returning its session id",
-      );
-    if (this.ownedSessions.has(nextId))
-      throw new Error(
-        "Vibe returned a session id already attached to this app",
-      );
-    this.ownedSessions.set(nextId, worker);
-    this.emit("status", { ...worker.status, sessionId: nextId });
-    return result;
+    try {
+      const result = await worker.request("session/fork", params);
+      const nextId =
+        result?.state?.session?.id ?? result?.session?.id ?? result?.sessionId;
+      if (typeof nextId !== "string" || !nextId)
+        throw new Error(
+          "Vibe forked a session without returning its session id",
+        );
+      if (this.ownedSessions.has(nextId)) {
+        // Do not leave the worker holding a duplicate root.
+        try {
+          await worker.request("session/stop", { sessionId: nextId });
+        } catch {
+          /* Best effort: the id collision already fails the call. */
+        }
+        throw new Error(
+          "Vibe returned a session id already attached to this app",
+        );
+      }
+      this.ownedSessions.set(nextId, worker);
+      this.emit("status", { ...worker.status, sessionId: nextId });
+      return result;
+    } catch (error) {
+      // A failed attached fork must not leave a half-attached worker claiming
+      // the source session. Ownership is only set on success above.
+      throw error;
+    }
   }
 
   #allocateBackend() {

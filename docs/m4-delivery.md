@@ -5,9 +5,10 @@ Runtime: official Mistral Vibe Unified **2.26.1 frozen** (no upgrade, no paid mo
 
 ## Final commit & branch state
 
-- Checkpoint `487552f` (M3 delivery) → M4 implementation (see commit list below). Pushed normally to `origin` (no `--force`, no new branch).
-- PR #1 stays **draft** (`state: open`, `draft: true`, `merged: false`). **No merge to `main`, no release, no upstream modification.**
-- Working tree state and CI runs are recorded below after push.
+- Checkpoint `487552f` (M3 delivery) → `be17a10` (M4 implementation: skills lifecycle, stdio MCP, tools/layers/ACP, terminal hardening) → `fa339cb` (M4 delivery record) → `8726141` (M4 UX styles) → **`ac3a16b` (M4 CI fix: canonical paths for short-TEMP runners)**. All pushed normally to `origin` (no `--force`, no new branch).
+- Branch `codex/windows-client` head: `ac3a16b25c36198d24b8311065fbcc658d681878`. PR #1 stays **draft** (`state: open`, `draft: true`, `merged: false`, `mergeable: true`, verified via API). **No merge to `main`, no release, no upstream modification.**
+- `ac3a16b` differs from red `8726141` by `tests/backend-stdio-m4.test.js` only (4-line canonical-path hardening, same production code). Its own push + PR runs are fully green (below).
+- Working tree clean at delivery; `git status` verified before each push and commit.
 
 ## Architecture & decisions
 
@@ -63,11 +64,15 @@ Runtime: official Mistral Vibe Unified **2.26.1 frozen** (no upgrade, no paid mo
 3. **Connector toggles risked the wrong RPC (audit finding, kept correct).** Live: `mcp/toggle{source:connector}` → `not_implemented`. Desktop already routes connectors to `connector_catalog/toggle` — verified and documented; no code change needed beyond the matrix + Tools/Layer honesty.
 4. **`connectors/refresh` param-doc gap (upstream gap, handled).** Registry lists only `sessionId`, live requires `name`. Desktop always sends `name`; recorded in the matrix, no probing beyond the verified shape.
 5. **New-test failures during development (test bugs, fixed).** Shell-metachar expectation used a space-only string (correctly accepted); MCP adapter test passed a `{mcp:{sources}}` wrapper the new helper initially didn't unwrap; stdio harness test bypassed session authorization. All fixed in test code — production behavior unchanged.
+6. **CI step-9 red on short-TEMP runners (deterministic, test-only bug, fixed in `ac3a16b`).** Both `fa339cb` and `8726141` failed `Build renderer and run backend tests` (exit 1, ~74 s step) while 161/161 pass locally. Cause: windows-latest exposes TEMP through short 8.3 names (`RUNNER~1`); the service keys authorized projects by realpath, but `backend-stdio-m4` passed the raw `mkdtemp` path to `session/start` → "existing selected folder" error on CI, green locally. Same signature as the M3 short-TEMP reds. Fix is test-only (realpath the project dir before dialog/start, mirroring `backend-prefs-m3`); production already canonicalizes everywhere. Step-9 on `ac3a16b` is green (68 s), confirming the suite ran to completion.
 
 ## GitHub Actions & installer
 
 - Workflow: `Windows build` (`.github/workflows/windows.yml`) on push + PR — build, `npm test` (161), frozen-backend probe, dev-app UI, NSIS packaging, packaged-app UI, SHA-256 + artifact upload.
-- Closing SHA + runs: recorded after push below (push run + PR #1 run links, artifact name, installer SHA-256).
+- Closing SHA `ac3a16b`: push run `https://github.com/maikolsiragusaa/mistral-vibe-desktop/actions/runs/38464524646` (**success**, 20:39–20:51 UTC, all 16 steps incl. build+161 tests, frozen-backend probe, dev-app UI, NSIS, packaged-app UI, SHA-256, artifact upload) and PR #1 run `https://github.com/maikolsiragusaa/mistral-vibe-desktop/actions/runs/38464533761` (**success**, same steps).
+- CI artifact (14-day retention): `Vibe-Desktop-Windows-ac3a16b25c36198d24b8311065fbcc658d681878-af73c6417d78ac32c1ce2f1ab481677c1e865aa804b0b9c0669ba9a4d63a7da1` (167 463 353 bytes zip: Setup exe + SHA256SUMS + screenshots + perf JSON + playwright traces + backend manifests).
+- CI installer SHA-256: `af73c6417d78ac32c1ce2f1ab481677c1e865aa804b0b9c0669ba9a4d63a7da1` (authoritative for `ac3a16b`; unsigned, same posture as M3).
+- Prior SHAs for the record: `8726141` push `38463419351` + PR `38463426902` (red at step 9, short-TEMP cause below); `fa339cb` push `38463248102` + PR `38463255453` (red at step 9, same cause).
 - Local installer: superseded by the CI artifact (same posture as M3: unsigned NSIS, `NotSigned`).
 
 ## Cloud: verified vs official-surface-only

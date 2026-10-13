@@ -1,49 +1,52 @@
 import { useCallback, useEffect, useState } from "react";
-import { Plus, RefreshCw, Trash2, X } from "lucide-react";
+import { AlertTriangle, Plus, RefreshCw, Trash2, X } from "lucide-react";
+import {
+  canonicalLoopId,
+  describeLoopInterval,
+  describeLoopNextFire,
+  sanitizeLoops,
+  type LoopWireItem as LoopItem,
+} from "./loops-model";
 
 const bridge = window.vibe;
 
-interface LoopItem {
-  id?: string;
-  loopId?: string;
-  interval?: string;
-  cron?: string;
-  prompt?: string;
-  nextFire?: number | null;
-  next_fire?: number | null;
-  [key: string]: unknown;
-}
-
 interface Props {
   sessionId: string | null;
+  backendActive: boolean;
   disabled?: boolean;
   onClose: () => void;
 }
 
+
+
 /** Official Code scheduled loops (loops/*).
  *
- * Loops run only while their session's backend is alive. This panel never
- * claims unattended execution when the backend is closed: creation is
- * explicit, deletion is explicit, and an empty backend state is shown as-is.
+ * Loops run only while their session's backend is alive. Creation and single
+ * deletion are explicit; Clear All is a two-step confirmed action. Destructive
+ * actions use canonical backend ids only — rows without an id cannot be
+ * deleted. Mutations carry pending state and refresh afterwards.
  */
-export function LoopsPanel({ sessionId, disabled, onClose }: Props) {
+export function LoopsPanel({ sessionId, backendActive, disabled, onClose }: Props) {
   const [loops, setLoops] = useState<LoopItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [interval, setInterval] = useState("1h");
   const [prompt, setPrompt] = useState("");
+  const [mutating, setMutating] = useState<string | null>(null);
+  const [clearArmed, setClearArmed] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!sessionId || !bridge) return;
     setLoading(true);
     setError("");
     try {
-      const result = await bridge.request<{ loops?: LoopItem[]; items?: LoopItem[] }>(
+      const result = await bridge.request<{ loops?: unknown; items?: unknown }>(
         "loops/list",
         { sessionId },
       );
-      setLoops(result.loops ?? result.items ?? []);
+      const raw = result.loops ?? result.items ?? [];
+      setLoops(sanitizeLoops(raw));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -52,11 +55,15 @@ export function LoopsPanel({ sessionId, disabled, onClose }: Props) {
   }, [sessionId]);
 
   useEffect(() => {
+    setClearArmed(false);
     void refresh();
   }, [refresh]);
 
+  const busy = disabled || mutating !== null;
+
   const create = async () => {
-    if (!sessionId || !bridge || !prompt.trim() || !interval.trim()) return;
+    if (!sessionId || !bridge || !prompt.trim() || !interval.trim() || busy) return;
+    setMutating("create");
     setError("");
     setNotice("");
     try {
@@ -70,11 +77,14 @@ export function LoopsPanel({ sessionId, disabled, onClose }: Props) {
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setMutating(null);
     }
   };
 
   const remove = async (loopId: string) => {
-    if (!sessionId || !bridge) return;
+    if (!sessionId || !bridge || busy) return;
+    setMutating(loopId);
     setError("");
     try {
       await bridge.request("loops/delete", { sessionId, loopId });
@@ -82,18 +92,28 @@ export function LoopsPanel({ sessionId, disabled, onClose }: Props) {
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setMutating(null);
     }
   };
 
   const clear = async () => {
-    if (!sessionId || !bridge) return;
+    if (!sessionId || !bridge || busy) return;
+    if (!clearArmed) {
+      setClearArmed(true);
+      return;
+    }
+    setMutating("clear");
     setError("");
     try {
       await bridge.request("loops/clear", { sessionId });
       setNotice("All loops cleared for this session.");
+      setClearArmed(false);
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setMutating(null);
     }
   };
 
@@ -114,6 +134,12 @@ export function LoopsPanel({ sessionId, disabled, onClose }: Props) {
         </button>
       </header>
       {!sessionId && <p>Open a local session first.</p>}
+      {sessionId && !backendActive && (
+        <p className="notice-text" role="status">
+          The backend for this session is not active, so loops cannot fire
+          right now. They resume when the session backend runs.
+        </p>
+      )}
       {sessionId && (
         <>
           {error && (
@@ -133,7 +159,7 @@ export function LoopsPanel({ sessionId, disabled, onClose }: Props) {
                 aria-label="Loop interval"
                 placeholder="1h, 30m, daily…"
                 value={interval}
-                disabled={disabled}
+                disabled={busy}
                 onChange={(e) => setInterval(e.target.value)}
               />
             </label>
@@ -143,25 +169,45 @@ export function LoopsPanel({ sessionId, disabled, onClose }: Props) {
                 aria-label="Loop prompt"
                 placeholder="What should Vibe run on this schedule?"
                 value={prompt}
-                disabled={disabled}
+                disabled={busy}
                 onChange={(e) => setPrompt(e.target.value)}
               />
             </label>
             <div className="button-row">
               <button
                 className="primary"
-                disabled={disabled || !prompt.trim() || !interval.trim()}
+                disabled={busy || !prompt.trim() || !interval.trim()}
                 onClick={() => void create()}
               >
-                <Plus size={14} /> Create loop
+                <Plus size={14} /> {mutating === "create" ? "Creating…" : "Create loop"}
               </button>
-              <button className="secondary" disabled={disabled || loading} onClick={() => void refresh()}>
+              <button className="secondary" disabled={busy || loading} onClick={() => void refresh()}>
                 <RefreshCw size={13} /> Refresh
               </button>
-              {loops.length > 0 && (
-                <button className="secondary" disabled={disabled} onClick={() => void clear()}>
-                  Clear all
+              {loops.length > 0 && !clearArmed && (
+                <button className="secondary" disabled={busy} onClick={() => void clear()}>
+                  Clear all…
                 </button>
+              )}
+              {clearArmed && (
+                <span className="clear-confirm" role="group" aria-label="Confirm clear all loops">
+                  <AlertTriangle size={14} />
+                  <span>Delete all {loops.length} loop(s)?</span>
+                  <button
+                    className="secondary danger"
+                    disabled={busy}
+                    onClick={() => void clear()}
+                  >
+                    {mutating === "clear" ? "Clearing…" : "Yes, clear all"}
+                  </button>
+                  <button
+                    className="secondary"
+                    disabled={busy}
+                    onClick={() => setClearArmed(false)}
+                  >
+                    Keep loops
+                  </button>
+                </span>
               )}
             </div>
             <small>
@@ -173,18 +219,27 @@ export function LoopsPanel({ sessionId, disabled, onClose }: Props) {
             {loading && <p role="status">Loading loops…</p>}
             {!loading && !loops.length && <p>No loops for this session.</p>}
             {loops.map((loop, index) => {
-              const id = String(loop.loopId ?? loop.id ?? index);
+              const id = canonicalLoopId(loop);
+              const key = id ?? `row-${index}`;
+              const next = describeLoopNextFire(loop);
               return (
-                <div className="loop-row" key={id}>
+                <div className="loop-row" key={key}>
                   <div>
-                    <strong>{String(loop.interval ?? loop.cron ?? "scheduled")}</strong>
-                    <p>{String(loop.prompt ?? "")}</p>
+                    <strong>{describeLoopInterval(loop)}</strong>
+                    <p>{typeof loop.prompt === "string" ? loop.prompt : ""}</p>
+                    {next && <small>{next}</small>}
+                    {!id && (
+                      <small className="error-text">
+                        Unidentified row from Vibe — refresh before deleting.
+                      </small>
+                    )}
                   </div>
                   <button
                     className="icon-button"
-                    aria-label={`Delete loop ${id}`}
-                    disabled={disabled}
-                    onClick={() => void remove(id)}
+                    aria-label={id ? `Delete loop ${id}` : "Delete loop (unavailable: no id)"}
+                    disabled={busy || !id}
+                    title={id ? `Delete loop ${id}` : "This row has no backend id and cannot be safely deleted."}
+                    onClick={() => id && void remove(id)}
                   >
                     <Trash2 size={14} />
                   </button>

@@ -1543,6 +1543,20 @@ button,
   color: var(--muted);
   font-size: 11px;
 }
+.subagent-sync {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+  margin: 10px 0;
+  font-size: 12px;
+}
+.subagent-sync small {
+  color: var(--muted);
+}
 .subagent-conversation {
   margin-top: 12px;
 }
@@ -1588,6 +1602,40 @@ button,
 .teleport-checks {
   margin: 8px 0 8px 18px;
   font-size: 12px;
+  display: grid;
+  gap: 4px;
+}
+.preflight-badge {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 6px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.preflight-badge.verified {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.preflight-badge.incompatible {
+  color: var(--error);
+  border-color: var(--error);
+}
+.preflight-badge.unknown {
+  color: var(--muted);
+}
+.clear-confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+.secondary.danger {
+  border-color: var(--error);
+  color: var(--error);
 }
 @media (prefers-reduced-motion: reduce) {
   .spin {

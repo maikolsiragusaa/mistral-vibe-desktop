@@ -21,11 +21,15 @@ import { LoopsPanel } from "./LoopsPanel";
 import { CloudPanel } from "./CloudPanel";
 import { WorkPanel } from "./WorkPanel";
 import {
+  clearStoredDrafts,
+  hasStoredDrafts,
   isDraftPersistenceEnabled,
   loadDurableDrafts,
+  loadLegacyDrafts,
   saveDurableDrafts,
   setDraftPersistenceEnabled,
 } from "./drafts";
+import { CompactMenuItem } from "./CompactMenuItem";
 import "./desktop.css";
 import {
   ArrowUp,
@@ -625,9 +629,23 @@ export function App() {
       preferences.motion === false ? "off" : "on";
   }, [preferences.motion]);
   useEffect(() => {
-    // Hydrate durable drafts once; in-memory drafts still work without opt-in.
+    // Hydrate durable drafts once; in-memory drafts always work without opt-in.
+    // Pre-M1.1 installs may hold legacy drafts with no opt-in record: surface
+    // them for this run without silently deleting or re-enabling persistence.
     const durable = loadDurableDrafts();
     for (const [key, value] of durable) sessionDrafts.current.set(key, value);
+    if (durable.size === 0) {
+      const legacy = loadLegacyDrafts();
+      if (legacy.size > 0) {
+        for (const [key, value] of legacy) {
+          if (!sessionDrafts.current.has(key))
+            sessionDrafts.current.set(key, value);
+        }
+        setNotice(
+          `Draft persistence is now opt-in and off. ${legacy.size} previous draft(s) kept for this run only — enable it in Settings to keep them across restarts, or clear stored drafts.`,
+        );
+      }
+    }
   }, []);
   useEffect(() => {
     if (state?.session.id) {
@@ -1672,21 +1690,14 @@ export function App() {
                 >
                   <Eye size={13} /> Mark as seen
                 </button>
-                <button
-                  role="menuitem"
+                <CompactMenuItem
                   disabled={working || running}
-                  onClick={() =>
-                    void protect(async () => {
-                      await request("session/compact", {
-                        sessionId: state.session.id,
-                      });
-                      await reload();
-                      setNotice("Session compaction requested.");
-                    })
-                  }
-                >
-                  Compact history
-                </button>
+                  sessionId={state.session.id}
+                  request={request}
+                  onDone={() => void reload()}
+                  onNotice={setNotice}
+                  onError={setError}
+                />
                 <button
                   role="menuitem"
                   disabled={working || running}
@@ -1991,7 +2002,12 @@ export function App() {
             sessionId={state?.session.id ?? null}
             projectPath={project}
             activeModel={runtime?.config.activeModel.alias ?? null}
+            models={(modelMetadata ?? []).map((m: any) => ({
+              alias: String(m.alias ?? m.name ?? ""),
+              provider: typeof m.provider === "string" ? m.provider : null,
+            }))}
             hasApiKey={Boolean(setup?.hasApiKey)}
+            backendReady={status.state === "ready"}
             disabled={working || running}
             onClose={() => setCodeScope("local")}
           />
@@ -3011,6 +3027,7 @@ export function App() {
           >
             <LoopsPanel
               sessionId={state.session.id}
+              backendActive={status.state === "ready"}
               disabled={working || running}
               onClose={() => setLoopsOpen(false)}
             />
@@ -3342,13 +3359,27 @@ export function App() {
                     }}
                   />
                   <span>
-                    Keep unsent drafts after restart
+                    Keep unsent drafts after restart (off by default)
                     <small>
-                      Opt-in local storage only. Session history is never
-                      journaled here.
+                      Stores only unsent composer text on this machine (up to
+                      50 drafts, 100k chars each). Never history, credentials,
+                      diagnostics or remote sync. Turning off deletes stored
+                      drafts.
                     </small>
                   </span>
                 </label>
+                <div className="button-row">
+                  <button
+                    className="secondary"
+                    disabled={!hasStoredDrafts()}
+                    onClick={() => {
+                      clearStoredDrafts();
+                      setNotice("Stored drafts cleared from this machine.");
+                    }}
+                  >
+                    Clear stored drafts
+                  </button>
+                </div>
               </div>
             </section>
             <section className="about">

@@ -1,29 +1,64 @@
 import { useCallback, useEffect, useState } from "react";
 import { ArrowUpRight, RefreshCw, X } from "lucide-react";
+import {
+  classifyTeleportReadiness,
+  type PreflightState,
+} from "./cloud-preflight";
 
 const bridge = window.vibe;
+
+export interface CloudModelInfo {
+  alias: string;
+  provider?: string | null;
+}
 
 interface Props {
   sessionId: string | null;
   projectPath: string;
   activeModel: string | null;
+  models: CloudModelInfo[];
   hasApiKey: boolean;
+  backendReady: boolean;
   disabled?: boolean;
   onClose: () => void;
+}
+
+function StateBadge({ state }: { state: PreflightState }) {
+  return (
+    <span className={`preflight-badge ${state}`}>
+      {state === "verified" ? "verified" : state === "incompatible" ? "not compatible" : "unknown"}
+    </span>
+  );
 }
 
 /** Cloud Code through official Mistral infrastructure only.
  *
  * Uses projectLinks/* and vibeCode/* when operational. Teleport is one-way
- * local -> cloud, requires a Git repo, a Mistral model and an eligible
- * account, and always lands on Medium 3.5 in the cloud. No bidirectional sync
- * is promised; limits are shown before transfer.
+ * local -> cloud and always lands on Medium 3.5 in the cloud (24h max, 3h
+ * idle, 30s per command). No bidirectional sync is promised.
+ * Preflight verifies the Git repo and model provider from real backend data;
+ * account tier and GitHub App stay unknown and are delegated to Mistral.
+ * Opening the picker is reported as exactly that — transfer completion can
+ * only be confirmed in Vibe Code Web.
  */
-export function CloudPanel({ sessionId, projectPath, activeModel, hasApiKey, disabled, onClose }: Props) {
+export function CloudPanel({
+  sessionId,
+  projectPath,
+  activeModel,
+  models,
+  hasApiKey,
+  backendReady,
+  disabled,
+  onClose,
+}: Props) {
   const [links, setLinks] = useState<any[]>([]);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
+  const [checkingGit, setCheckingGit] = useState(false);
+  const [isGitRepo, setIsGitRepo] = useState<boolean | null>(null);
+  const [branch, setBranch] = useState<string | null>(null);
+  const [pickerState, setPickerState] = useState<"idle" | "opened" | "failed">("idle");
 
   const refresh = useCallback(async () => {
     if (!bridge) return;
@@ -34,7 +69,8 @@ export function CloudPanel({ sessionId, projectPath, activeModel, hasApiKey, dis
         "projectLinks/list",
         {},
       );
-      setLinks(result.links ?? result.items ?? []);
+      const raw = result.links ?? result.items ?? [];
+      setLinks(Array.isArray(raw) ? raw : []);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -42,32 +78,74 @@ export function CloudPanel({ sessionId, projectPath, activeModel, hasApiKey, dis
     }
   }, []);
 
+  const checkGit = useCallback(async () => {
+    if (!bridge?.git || !projectPath) {
+      setIsGitRepo(null);
+      setBranch(null);
+      return;
+    }
+    setCheckingGit(true);
+    try {
+      const status = await bridge.git<{
+        isGitRepository?: boolean;
+        branch?: string | null;
+      }>("status", { projectPath });
+      setIsGitRepo(status?.isGitRepository ?? null);
+      setBranch(
+        typeof status?.branch === "string" && status.branch ? status.branch : null,
+      );
+    } catch {
+      // A failed check is unknown, never satisfied.
+      setIsGitRepo(null);
+      setBranch(null);
+    } finally {
+      setCheckingGit(false);
+    }
+  }, [projectPath]);
+
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    setPickerState("idle");
+    void checkGit();
+  }, [checkGit, sessionId]);
 
   const openPicker = async (purpose: "configure" | "teleport") => {
     if (!sessionId || !bridge) return;
     setError("");
     setNotice("");
     try {
-      const result = await bridge.request<any>("vibeCode/projects/open", {
-        sessionId,
-        purpose,
-      });
+      await bridge.request("vibeCode/projects/open", { sessionId, purpose });
+      setPickerState("opened");
       setNotice(
-        result?.pickerUrl || result?.url
-          ? `Cloud picker ready: ${result.pickerUrl ?? result.url}`
-          : "Cloud picker opened by Vibe. Follow the session prompt to choose a project.",
+        purpose === "teleport"
+          ? "Teleport picker opened by Vibe — choose the cloud project in the session flow. The transfer itself completes in Vibe Code Web; this panel cannot confirm it."
+          : "Cloud picker opened by Vibe. Project selection continues in the session flow.",
       );
     } catch (e) {
+      setPickerState("failed");
       setError(e instanceof Error ? e.message : String(e));
     }
   };
 
-  const isMistralModel =
-    !activeModel || /mistral|medium|devstral|small|large|ministral/i.test(activeModel);
-  const canTeleport = Boolean(sessionId && projectPath && hasApiKey && isMistralModel);
+  // Provider comes from the runtime inventory record only — never inferred
+  // from the display name. Unknown provider stays unknown.
+  const activeRecord = activeModel
+    ? models.find((m) => m.alias === activeModel) ?? null
+    : null;
+  const preflight = classifyTeleportReadiness({
+    isGitRepository: isGitRepo,
+    branch,
+    provider: activeRecord?.provider ?? null,
+    activeModelAlias: activeModel,
+    hasApiKey,
+    backendReady,
+  });
+  const canAttemptTeleport = Boolean(
+    sessionId && !disabled && backendReady && preflight.overall !== "incompatible",
+  );
 
   return (
     <section className="cloud-panel" aria-label="Cloud code">
@@ -99,7 +177,7 @@ export function CloudPanel({ sessionId, projectPath, activeModel, hasApiKey, dis
           </button>
           <button
             className="secondary"
-            disabled={disabled || !sessionId}
+            disabled={disabled || !sessionId || !backendReady}
             onClick={() => void openPicker("configure")}
           >
             Configure cloud project
@@ -108,37 +186,70 @@ export function CloudPanel({ sessionId, projectPath, activeModel, hasApiKey, dis
         {loading && <p role="status">Loading links…</p>}
         {!loading && !links.length && <p>No linked cloud projects reported by Vibe.</p>}
         {links.map((link: any, index: number) => (
-          <div className="loop-row" key={String(link.projectId ?? link.id ?? index)}>
+          <div className="loop-row" key={String(link?.projectId ?? link?.id ?? index)}>
             <div>
-              <strong>{String(link.projectName ?? link.name ?? "Cloud project")}</strong>
-              <small className="break-word">{String(link.projectId ?? link.id ?? "")}</small>
+              <strong>{String(link?.projectName ?? link?.name ?? "Cloud project")}</strong>
+              <small className="break-word">{String(link?.projectId ?? link?.id ?? "")}</small>
             </div>
           </div>
         ))}
       </section>
       <section>
         <h3>Teleport this session</h3>
+        <div className="button-row">
+          <button className="secondary" disabled={checkingGit || !projectPath} onClick={() => void checkGit()}>
+            <RefreshCw size={13} /> {checkingGit ? "Checking repository…" : "Re-check repository"}
+          </button>
+        </div>
         <ul className="teleport-checks">
-          <li>Account key: {hasApiKey ? "available to Vibe" : "missing — sign in first"}</li>
-          <li>Git repository: {projectPath ? "selected" : "select a repo first"}</li>
           <li>
-            Model: {activeModel ?? "inherited"}
-            {isMistralModel ? " — eligible" : " — third-party models cannot teleport"}
+            Git repository: <StateBadge state={preflight.gitRepo} />{" "}
+            {preflight.gitRepo === "verified"
+              ? branch
+                ? `valid repo, branch ${branch}`
+                : "valid repo, branch unknown"
+              : preflight.gitRepo === "incompatible"
+                ? "not a Git repository — Teleport requires one"
+                : "could not verify — select a project and retry"}
+          </li>
+          <li>
+            Model: <StateBadge state={preflight.model} /> {activeModel ?? "inherited"}
+            {preflight.model === "incompatible"
+              ? " — third-party/custom providers cannot teleport"
+              : preflight.model === "unknown"
+                ? " — provider not verifiable here; Mistral decides"
+                : ""}
+          </li>
+          <li>
+            Credentials: <StateBadge state={preflight.credentials} />{" "}
+            {hasApiKey ? "key available to Vibe" : "missing — sign in first"}
+          </li>
+          <li>
+            Account plan (Pro/Team/Enterprise): <StateBadge state={preflight.accountTier} />{" "}
+            verified by Mistral at transfer time
+          </li>
+          <li>
+            GitHub App and permissions: <StateBadge state={preflight.githubApp} />{" "}
+            verified by Mistral at transfer time
           </li>
         </ul>
         <p>
           Teleport is <strong>one-way</strong>. The cloud continues on Mistral
           Medium 3.5 for up to 24h (3h idle timeout, 30s per command). You cannot
           pull it back locally; continue from Vibe Code Web.
+          {pickerState === "opened" &&
+            " Picker opened — completion is confirmed in Vibe Code Web, not here."}
         </p>
         <div className="button-row">
           <button
             className="primary"
-            disabled={disabled || !canTeleport}
+            disabled={!canAttemptTeleport}
             title={
-              canTeleport
-                ? "Move this session to Vibe Code Web"
-                : "Teleport needs a session, Git repo, API key and Mistral model"
+              preflight.overall === "incompatible"
+                ? "A requirement is not compatible (see states above)"
+                : !sessionId
+                  ? "Open a session first"
+                  : "Open the Mistral Teleport picker for this session"
             }
             onClick={() => void openPicker("teleport")}
           >

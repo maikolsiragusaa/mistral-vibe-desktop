@@ -28,5 +28,8 @@ contextBridge.exposeInMainWorld(
     openAuthLink: (id) => ipcRenderer.invoke("vibe:open-auth-link", id),
     openQuotaDashboard: (kind) =>
       ipcRenderer.invoke("vibe:quota-dashboard", kind),
+    previewOpen: (url) => ipcRenderer.invoke("vibe:preview-open", url),
+    previewReload: () => ipcRenderer.invoke("vibe:preview-reload"),
+    previewClose: () => ipcRenderer.invoke("vibe:preview-close"),
   }),
 );

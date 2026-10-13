@@ -37,11 +37,18 @@ async function makeRepository(t, { initialCommit = true } = {}) {
     runGit(projectPath, "add", "--", "tracked.txt");
     runGit(projectPath, "commit", "--quiet", "-m", "initial commit");
   }
+  // App-managed worktree space for creation tests (mirrors userData/worktrees).
+  const managedRoot = path.join(tempRoot, "managed worktrees");
+  await mkdir(managedRoot, { recursive: true });
+  // Session ownership is free by default; individual tests override it.
+  let ownership = async () => ({ unknown: false, sessions: [] });
   const service = new GitWorkspaceService({
     authorizeProjectRoot: async (requested) => {
       assert.equal(path.resolve(requested), path.resolve(projectPath));
       return projectPath;
     },
+    managedWorktreesRoot: managedRoot,
+    getWorktreeOwnership: (...args) => ownership(...args),
   });
   t.after(async () =>
     rm(tempRoot, {
@@ -51,7 +58,15 @@ async function makeRepository(t, { initialCommit = true } = {}) {
       retryDelay: 100,
     }),
   );
-  return { tempRoot, projectPath, service };
+  return {
+    tempRoot,
+    projectPath,
+    service,
+    managedRoot,
+    setOwnership: (next) => {
+      ownership = next;
+    },
+  };
 }
 
 function fakeGhExecFile(realExecFile, { prList = [], prView = null } = {}) {
@@ -751,6 +766,36 @@ test("worktrees report dirty and ahead state for safe navigation", async (t) => 
   assert.equal(dirty.dirty, true);
 });
 
+test("worktree creation uses the managed space and never dirties the main checkout", async (t) => {
+  const { projectPath, service, managedRoot } = await makeRepository(t);
+  const headBefore = runGit(projectPath, "rev-parse", "HEAD");
+  const created = await service.createWorktree({ projectPath, branch: "feature/m2-space" });
+  const item = created.items.find((entry) => entry.branch === "feature/m2-space");
+  assert.ok(item, "created worktree is listed and verified");
+  assert.equal(item.branch, "feature/m2-space");
+  const canonicalTarget = await realpath(item.path);
+  const canonicalManaged = await realpath(managedRoot);
+  assert.ok(
+    canonicalTarget.toLowerCase().startsWith(canonicalManaged.toLowerCase()),
+    `worktree lives in the managed space: ${canonicalTarget}`,
+  );
+  assert.ok(
+    !canonicalTarget.toLowerCase().startsWith((await realpath(projectPath)).toLowerCase() + path.sep),
+    "worktree is outside the repository checkout",
+  );
+  // The main checkout is untouched: same HEAD and no new debris inside it.
+  assert.equal(runGit(projectPath, "rev-parse", "HEAD"), headBefore);
+  const mainStatus = await service.status({ projectPath });
+  assert.ok(
+    mainStatus.files.every((file) => !file.path.startsWith(".worktrees")),
+    "no .worktrees debris in Changes",
+  );
+  assert.ok(
+    mainStatus.files.every((file) => !file.path.includes("feature")),
+    "main checkout gained no worktree files",
+  );
+});
+
 test("worktree creation and safe removal respect dirty, untracked and unpushed guards", async (t) => {
   const { projectPath, service } = await makeRepository(t);
   const created = await service.createWorktree({ projectPath, branch: "feature-m2" });
@@ -838,6 +883,113 @@ test("file explorer lists lazily and previews safely", async (t) => {
   await assert.rejects(service.readFile({ projectPath, path: ".git/config" }), /not available/);
   await assert.rejects(service.readFile({ projectPath, path: "docs" }), /individual files/);
   await assert.rejects(service.listDirectory({ projectPath, dir: ".." }), /leave/);
+});
+
+test("worktree removal is blocked by session ownership and unknown state", async (t) => {
+  const { projectPath, service, setOwnership } = await makeRepository(t);
+  const created = await service.createWorktree({ projectPath, branch: "owned-branch" });
+  const target = created.items.find((entry) => entry.branch === "owned-branch").path;
+  // Occupied by an agent turn: blocked with the reason, checkout preserved.
+  setOwnership(async () => ({
+    unknown: false,
+    sessions: [
+      {
+        sessionId: "sess-live-turn",
+        occupied: true,
+        attached: true,
+        hasActiveTurn: true,
+        hasPendingCallbacks: false,
+        leaseHeld: false,
+      },
+    ],
+  }));
+  await assert.rejects(
+    service.removeWorktree({ projectPath, worktreePath: target }),
+    /used by 1 session\(s\)/,
+  );
+  assert.ok((await service.worktrees({ projectPath })).items.some((entry) => entry.branch === "owned-branch"));
+  // Unverifiable ownership blocks as well — never assume a directory is free.
+  setOwnership(async () => ({ unknown: true, sessions: [] }));
+  await assert.rejects(
+    service.removeWorktree({ projectPath, worktreePath: target }),
+    /unverifiable/,
+  );
+  // Provider failure also blocks.
+  setOwnership(async () => {
+    throw new Error("backend gone");
+  });
+  await assert.rejects(
+    service.removeWorktree({ projectPath, worktreePath: target }),
+    /unverifiable/,
+  );
+  // Idle listed sessions warn but allow: removal succeeds once free.
+  setOwnership(async () => ({
+    unknown: false,
+    sessions: [{ sessionId: "sess-saved", occupied: false, attached: false }],
+  }));
+  const after = await service.removeWorktree({ projectPath, worktreePath: target });
+  assert.ok(!after.items.some((entry) => entry.branch === "owned-branch"));
+});
+
+test("concurrent mutations on one repository serialize without index corruption", async (t) => {
+  const { projectPath, service } = await makeRepository(t);
+  const target = path.join(projectPath, "tracked.txt");
+  const base = Array.from({ length: 40 }, (_, i) => `line${i + 1} before`).join("\n") + "\n";
+  await writeFile(target, base);
+  runGit(projectPath, "add", "--", "tracked.txt");
+  runGit(projectPath, "commit", "--quiet", "-m", "forty lines");
+  const edited = base
+    .replace("line2 before", "line2 AFTER")
+    .replace("line20 before", "line20 AFTER")
+    .replace("line38 before", "line38 AFTER");
+  await writeFile(target, edited);
+  const hunks = extractHunks((await service.diff({ projectPath, path: "tracked.txt" })).diffText);
+  assert.ok(hunks.length >= 3);
+  // Three overlapping generations race: serialization makes them run in
+  // order; the first stages, the rest see a stale index and are refused —
+  // the index is never corrupted and the process never deadlocks.
+  const results = await Promise.allSettled(
+    hunks.map((hunk) =>
+      service.stageHunk({ projectPath, path: "tracked.txt", header: hunk.header, lines: hunk.lines }),
+    ),
+  );
+  const stagedDiff = runGit(projectPath, "diff", "--cached", "--", "tracked.txt");
+  assert.ok(results.some((r) => r.status === "fulfilled"), "at least one hunk stages");
+  assert.match(stagedDiff, /AFTER/);
+  // Whole-file concurrent stages both succeed and converge.
+  await writeFile(target, edited.replace("line2 AFTER", "line2 AFTER2"));
+  const [first, second] = await Promise.all([
+    service.stage({ projectPath, paths: ["tracked.txt"] }),
+    service.stage({ projectPath, paths: ["tracked.txt"] }),
+  ]);
+  assert.ok(first.files.find((f) => f.path === "tracked.txt").staged);
+  assert.ok(second.files.find((f) => f.path === "tracked.txt").staged);
+});
+
+test("hunk staging refuses renames and deletions as whole-file operations", async (t) => {
+  const { projectPath, service } = await makeRepository(t);
+  await writeFile(path.join(projectPath, "gone.txt"), "delete me\n");
+  runGit(projectPath, "add", "--", "gone.txt");
+  runGit(projectPath, "commit", "--quiet", "-m", "add gone");
+  runGit(projectPath, "mv", "gone.txt", "renamed.txt");
+  const renameDiff = await service.diff({ projectPath, path: "renamed.txt" });
+  const renameHunks = extractHunks(renameDiff.diffText);
+  if (renameHunks.length > 0) {
+    await assert.rejects(
+      service.stageHunk({ projectPath, path: "renamed.txt", header: renameHunks[0].header, lines: renameHunks[0].lines }),
+      /whole, not by hunk/,
+    );
+  }
+  runGit(projectPath, "reset", "--quiet", "--hard", "HEAD");
+  await rm(path.join(projectPath, "tracked.txt"));
+  const deleteDiff = await service.diff({ projectPath, path: "tracked.txt" });
+  const deleteHunks = extractHunks(deleteDiff.diffText);
+  if (deleteHunks.length > 0) {
+    await assert.rejects(
+      service.stageHunk({ projectPath, path: "tracked.txt", header: deleteHunks[0].header, lines: deleteHunks[0].lines }),
+      /whole, not by hunk/,
+    );
+  }
 });
 
 test("mutations refuse when the repository identity changes (TOCTOU)", async (t) => {

@@ -152,6 +152,9 @@ export interface VibeBridge {
   ): Promise<T>;
   openAuthLink(id: string): Promise<void>;
   openQuotaDashboard(kind: "vibe" | "usage" | "limits"): Promise<void>;
+  previewOpen(url: string): Promise<{ url: string }>;
+  previewReload(): Promise<{ url: string }>;
+  previewClose(): Promise<void>;
 }
 declare global {
   interface Window {

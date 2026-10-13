@@ -170,6 +170,76 @@ test("pool rejects unsafe connection limits", () => {
   );
 });
 
+test("worktree usage describes occupied, idle, free and unknown placement read-only", async (t) => {
+  const backends = [];
+  const pool = new VibeBackendPool({
+    backendFactory: () => {
+      const backend = new FakeBackend();
+      backends.push(backend);
+      return backend;
+    },
+  });
+  t.after(() => pool.shutdown());
+  const worker = backends[0];
+  worker.activeTurnId = null;
+  worker.pendingCallbacks = new Map();
+  worker.sessionLeaseHolders = new Map();
+  pool.primary.sessionLeaseHolders = new Map();
+  pool.primary.knownSessions.set("sess-live", {
+    cwd: "C:\\managed\\wt-one",
+    allowedRoots: ["C:\\managed\\wt-one"],
+  });
+  pool.primary.knownSessions.set("sess-saved", {
+    cwd: "C:\\managed\\wt-one",
+    allowedRoots: ["C:\\managed\\wt-one"],
+  });
+  pool.ownedSessions.set("sess-live", worker);
+  worker.activeSessionId = "sess-live";
+  worker.activeTurnId = "turn-9";
+
+  const occupied = pool.describeWorktreeUsage("C:\\managed\\wt-one", { platform: "win32" });
+  assert.equal(occupied.unknown, false);
+  assert.equal(occupied.sessions.length, 2);
+  const live = occupied.sessions.find((s) => s.sessionId === "sess-live");
+  assert.equal(live.occupied, true);
+  assert.equal(live.hasActiveTurn, true);
+  assert.equal(live.attached, true);
+  const saved = occupied.sessions.find((s) => s.sessionId === "sess-saved");
+  assert.equal(saved.occupied, false);
+  assert.ok(Object.isFrozen(occupied));
+  assert.ok(Object.isFrozen(occupied.sessions));
+
+  // Case-insensitive match on Windows.
+  const lower = pool.describeWorktreeUsage("c:\\MANAGED\\wt-one", { platform: "win32" });
+  assert.equal(lower.sessions.length, 2);
+
+  // A checkout with no sessions is free, never unknown.
+  const free = pool.describeWorktreeUsage("C:\\managed\\wt-empty", { platform: "win32" });
+  assert.equal(free.unknown, false);
+  assert.deepEqual([...free.sessions], []);
+
+  // An active turn on an unlisted session cannot be placed: unknown blocks.
+  worker.activeSessionId = "sess-ghost";
+  worker.activeTurnId = "turn-ghost";
+  const unknown = pool.describeWorktreeUsage("C:\\managed\\wt-one", { platform: "win32" });
+  assert.equal(unknown.unknown, true);
+
+  // Pending callbacks for unknown sessions are also unverifiable.
+  worker.activeSessionId = null;
+  worker.activeTurnId = null;
+  worker.pendingCallbacks.set("cb-1", { sessionId: "sess-ghost", kind: "approval" });
+  const unknownCallbacks = pool.describeWorktreeUsage("C:\\managed\\wt-empty", { platform: "win32" });
+  assert.equal(unknownCallbacks.unknown, true);
+
+  // Leases held on a placed session mark it occupied without any turn.
+  worker.pendingCallbacks.clear();
+  pool.primary.sessionLeaseHolders.set("sess-saved", { processId: 1234 });
+  const leased = pool.describeWorktreeUsage("C:\\managed\\wt-one", { platform: "win32" });
+  assert.equal(leased.unknown, false);
+  assert.equal(leased.sessions.find((s) => s.sessionId === "sess-saved").occupied, true);
+  assert.equal(leased.sessions.find((s) => s.sessionId === "sess-saved").leaseHeld, true);
+});
+
 class FakeBackend extends EventEmitter {
   constructor() {
     super();

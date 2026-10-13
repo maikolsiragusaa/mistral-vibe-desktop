@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process";
-import { readdir, readFile as readFsFile, realpath, stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, readdir, readFile as readFsFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -333,6 +334,8 @@ function parseGitLog(raw) {
 export class GitWorkspaceService {
   constructor({
     authorizeProjectRoot,
+    managedWorktreesRoot = null,
+    getWorktreeOwnership = null,
     execFileImpl = execFile,
     spawnImpl = spawn,
     gitPath = "git",
@@ -343,7 +346,17 @@ export class GitWorkspaceService {
   } = {}) {
     if (typeof authorizeProjectRoot !== "function")
       throw new TypeError("authorizeProjectRoot must be a function");
+    if (managedWorktreesRoot !== null && typeof managedWorktreesRoot !== "string")
+      throw new TypeError("managedWorktreesRoot must be an absolute path or null");
+    if (
+      getWorktreeOwnership !== null &&
+      typeof getWorktreeOwnership !== "function"
+    )
+      throw new TypeError("getWorktreeOwnership must be a function or null");
     this.authorizeProjectRoot = authorizeProjectRoot;
+    this.managedWorktreesRoot = managedWorktreesRoot;
+    this.getWorktreeOwnership = getWorktreeOwnership;
+    this.mutationChains = new Map();
     this.execFileImpl = execFileImpl;
     this.spawnImpl = spawnImpl;
     this.gitPath = gitPath;
@@ -489,54 +502,58 @@ export class GitWorkspaceService {
   async stage({ projectPath, paths } = {}) {
     const root = await this.#requireRepository(projectPath);
     const safePaths = await this.#validateMutationPaths(root, paths);
-    // Narrow the TOCTOU window: re-verify repo identity immediately before
-    // the mutation; the returned status verifies the actual index effect.
-    await this.#verifyRepositoryIdentity(root);
-    await this.#runGit(
-      root,
-      ["--literal-pathspecs", "add", "--", ...safePaths],
-      "Git stage",
-    );
-    return this.status({ projectPath });
+    return this.#serializeMutation(root, async () => {
+      // Narrow the TOCTOU window: re-verify repo identity immediately before
+      // the mutation; the returned status verifies the actual index effect.
+      await this.#verifyRepositoryIdentity(root);
+      await this.#runGit(
+        root,
+        ["--literal-pathspecs", "add", "--", ...safePaths],
+        "Git stage",
+      );
+      return this.status({ projectPath });
+    });
   }
 
   async unstage({ projectPath, paths } = {}) {
     const root = await this.#requireRepository(projectPath);
     const safePaths = await this.#validateMutationPaths(root, paths);
-    await this.#verifyRepositoryIdentity(root);
-    let hasHead = true;
-    try {
-      await this.#runGit(
-        root,
-        ["rev-parse", "--verify", "HEAD"],
-        "Git head lookup",
-        { readOnly: true },
-      );
-    } catch (error) {
-      if (error.code === 128) hasHead = false;
-      else throw error;
-    }
-    if (hasHead) {
-      await this.#runGit(
-        root,
-        ["--literal-pathspecs", "restore", "--staged", "--", ...safePaths],
-        "Git unstage",
-      );
-    } else {
-      await this.#runGit(
-        root,
-        [
-          "--literal-pathspecs",
-          "rm",
-          "--cached",
-          "--ignore-unmatch",
-          "--",
-          ...safePaths,
-        ],
-        "Git unstage",
-      );
-    }
-    return this.status({ projectPath });
+    return this.#serializeMutation(root, async () => {
+      await this.#verifyRepositoryIdentity(root);
+      let hasHead = true;
+      try {
+        await this.#runGit(
+          root,
+          ["rev-parse", "--verify", "HEAD"],
+          "Git head lookup",
+          { readOnly: true },
+        );
+      } catch (error) {
+        if (error.code === 128) hasHead = false;
+        else throw error;
+      }
+      if (hasHead) {
+        await this.#runGit(
+          root,
+          ["--literal-pathspecs", "restore", "--staged", "--", ...safePaths],
+          "Git unstage",
+        );
+      } else {
+        await this.#runGit(
+          root,
+          [
+            "--literal-pathspecs",
+            "rm",
+            "--cached",
+            "--ignore-unmatch",
+            "--",
+            ...safePaths,
+          ],
+          "Git unstage",
+        );
+      }
+      return this.status({ projectPath });
+    });
   }
 
   async stageHunk({ projectPath, path: filePath, header, lines } = {}) {
@@ -552,7 +569,15 @@ export class GitWorkspaceService {
     validateHunkInput(header, lines);
     const root = await this.#requireRepository(projectPath);
     await this.#assertSafeFilePath(root, relativePath);
-    await this.#verifyRepositoryIdentity(root);
+    return this.#serializeMutation(root, async () => {
+      await this.#verifyRepositoryIdentity(root);
+      await this.#applyHunkLocked(root, projectPath, relativePath, header, lines, reverse);
+      // Success of the call is not enough: return the verified index state.
+      return this.status({ projectPath });
+    });
+  }
+
+  async #applyHunkLocked(root, projectPath, relativePath, header, lines, reverse) {
     const staged = Boolean(reverse);
     const status = await this.#statusAtRoot(root);
     const changed = status.files.find((file) => file.path === relativePath);
@@ -561,6 +586,10 @@ export class GitWorkspaceService {
       throw operationError("Untracked files are staged whole, not by hunk");
     if (changed.conflicted)
       throw operationError("Resolve conflicts before staging individual hunks");
+    if (changed.originalPath)
+      throw operationError("Renamed files are staged whole, not by hunk");
+    if (changed.deleted)
+      throw operationError("Deleted files are staged whole, not by hunk");
     // Regenerate the authoritative diff at execution time. The requested hunk
     // must match a current hunk exactly or the diff is stale (concurrent
     // edits, index changed, CRLF normalization) and the apply is refused.
@@ -595,8 +624,6 @@ export class GitWorkspaceService {
       reverse ? "Git unstage hunk" : "Git stage hunk",
       { input: patch, maxBuffer: MAX_COMMAND_OUTPUT_BYTES },
     );
-    // Success of the call is not enough: return the verified index state.
-    return this.status({ projectPath });
   }
 
   async #rawDiffAtRoot(root, relativePath, staged) {
@@ -634,7 +661,6 @@ export class GitWorkspaceService {
 
   async commit({ projectPath, message } = {}) {
     const root = await this.#requireRepository(projectPath);
-    await this.#verifyRepositoryIdentity(root);
     if (
       typeof message !== "string" ||
       message.trim().length === 0 ||
@@ -645,24 +671,27 @@ export class GitWorkspaceService {
         "Commit message must be between 1 and 2000 characters",
       );
     }
-    await this.#runGit(root, ["commit", "-m", message], "Git commit");
-    const head = await this.#runGit(
-      root,
-      ["rev-parse", "HEAD"],
-      "Git commit lookup",
-      { readOnly: true },
-    );
-    const summary = await this.#runGit(
-      root,
-      ["show", "-s", "--format=%s", "HEAD"],
-      "Git commit lookup",
-      { readOnly: true },
-    );
-    return {
-      isGitRepository: true,
-      hash: head.stdout.trim(),
-      subject: summary.stdout.trim(),
-    };
+    return this.#serializeMutation(root, async () => {
+      await this.#verifyRepositoryIdentity(root);
+      await this.#runGit(root, ["commit", "-m", message], "Git commit");
+      const head = await this.#runGit(
+        root,
+        ["rev-parse", "HEAD"],
+        "Git commit lookup",
+        { readOnly: true },
+      );
+      const summary = await this.#runGit(
+        root,
+        ["show", "-s", "--format=%s", "HEAD"],
+        "Git commit lookup",
+        { readOnly: true },
+      );
+      return {
+        isGitRepository: true,
+        hash: head.stdout.trim(),
+        subject: summary.stdout.trim(),
+      };
+    });
   }
 
   async worktrees({ projectPath } = {}) {
@@ -683,16 +712,68 @@ export class GitWorkspaceService {
     for (let index = 0; index < listed.items.length; index += 1) {
       const item = listed.items[index];
       if (index >= MAX_WORKTREE_DETAILS) {
-        items.push({ ...item, dirty: null, ahead: null, behind: null });
+        items.push({
+          ...item,
+          dirty: null,
+          ahead: null,
+          behind: null,
+          usage: { state: "unknown", sessions: [] },
+        });
         continue;
       }
       try {
-        items.push({ ...item, ...(await this.#worktreeDetails(item.path)) });
+        const details = await this.#worktreeDetails(item.path);
+        const usage = await this.#worktreeUsageFor(item.path);
+        items.push({ ...item, ...details, usage });
       } catch {
-        items.push({ ...item, dirty: null, ahead: null, behind: null });
+        items.push({
+          ...item,
+          dirty: null,
+          ahead: null,
+          behind: null,
+          usage: { state: "unknown", sessions: [] },
+        });
       }
     }
     return { isGitRepository: true, items, truncated: listed.truncated };
+  }
+
+  async #worktreeUsageFor(worktreePath) {
+    // Read-only ownership snapshot for display. Never throws: listing must
+    // stay available and report "unknown" rather than fail.
+    try {
+      if (typeof this.getWorktreeOwnership !== "function")
+        return { state: "unknown", sessions: [] };
+      let canonical;
+      try {
+        canonical = await realpath(worktreePath);
+      } catch {
+        return { state: "unknown", sessions: [] };
+      }
+      const usage = await this.getWorktreeOwnership(canonical);
+      if (!usage || typeof usage !== "object" || usage.unknown)
+        return { state: "unknown", sessions: [] };
+      const sessions = (Array.isArray(usage.sessions) ? usage.sessions : [])
+        .filter((s) => s && typeof s.sessionId === "string")
+        .slice(0, 10)
+        .map((s) => ({
+          sessionId: s.sessionId,
+          occupied: Boolean(s.occupied),
+          attached: Boolean(s.attached),
+          hasActiveTurn: Boolean(s.hasActiveTurn),
+          hasPendingCallbacks: Boolean(s.hasPendingCallbacks),
+          leaseHeld: Boolean(s.leaseHeld),
+          readOnlyChild: Boolean(s.readOnlyChild),
+        }));
+      const state = sessions.some((s) => s.occupied)
+        ? "occupied"
+        : sessions.length > 0
+          ? "idle"
+          : "free";
+      return { state, sessions: Object.freeze(sessions) };
+    } catch {
+      return { state: "unknown", sessions: [] };
+    }
   }
 
   async #worktreeDetails(worktreePath) {
@@ -751,15 +832,34 @@ export class GitWorkspaceService {
     throw operationError("This worktree could not be identified with certainty");
   }
 
+  #managedNamespaceFor(root) {
+    // Deterministic per-repository namespace inside the app-managed space:
+    // <managed>/<slug>-<sha1(root)[:12]>. Multi-repo safe (hash), readable
+    // (slug), bounded (fixed depth). Never inside the checkout itself, so the
+    // main repository never becomes dirty from a new checkout and agents
+    // watching the tree never see foreign worktree files.
+    const base = path.basename(root).replace(/[^A-Za-z0-9_.-]+/g, "_").slice(0, 48) || "repo";
+    const digest = createHash("sha1")
+      .update(this.platform === "win32" ? root.toLowerCase() : root)
+      .digest("hex")
+      .slice(0, 12);
+    return `${base}-${digest}`;
+  }
+
   async createWorktree({ projectPath, branch, directory } = {}) {
     // Minimal local adapter: the Unified harness 2.26.1 exposes list/remove/
     // reap/prune but no creation RPC, so creation is a circumscribed
-    // `git worktree add` inside the authorized repository. Never writes
-    // outside the repository root (no external sibling writes without an
-    // explicit authorized folder), never moves the active session, never
-    // overwrites existing branches.
+    // `git worktree add` in the app-managed space OUTSIDE the checkout
+    // (userData/worktrees/<repo>-<hash>/<name>). Rationale: a checkout nested
+    // inside the repository shows up as untracked noise in Changes, pollutes
+    // agent file watches, and risks accidental commits of the link directory.
+    // The shared .gitignore is never touched (too invasive); pre-existing
+    // worktrees in any location keep working for list/remove. Never moves the
+    // active session, never overwrites existing branches, never migrates or
+    // deletes older worktrees.
     const root = await this.#requireRepository(projectPath);
-    await this.#verifyRepositoryIdentity(root);
+    if (typeof this.managedWorktreesRoot !== "string" || !path.isAbsolute(this.managedWorktreesRoot))
+      throw operationError("Worktree creation is unavailable in this installation");
     if (
       typeof branch !== "string" ||
       branch.length < 1 ||
@@ -771,99 +871,176 @@ export class GitWorkspaceService {
       !/^[A-Za-z0-9_./-]+$/.test(branch)
     )
       throw new TypeError("Worktree branch name is invalid");
-    let name = typeof directory === "string" && directory ? directory : branch;
+    const name = typeof directory === "string" && directory ? directory : branch.replaceAll("/", "-");
     if (!/^[A-Za-z0-9_.-]{1,128}$/.test(name))
       throw new TypeError("Worktree directory name is invalid");
-    const target = path.join(root, ".worktrees", name);
-    if (!inside(root, target, this.platform))
-      throw new TypeError("Worktree directory is invalid");
+    let managed;
     try {
-      await stat(target);
-      throw operationError("This worktree directory already exists");
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
+      await mkdir(this.managedWorktreesRoot, { recursive: true });
+      managed = await realpath(this.managedWorktreesRoot);
+      const details = await stat(managed);
+      if (!details.isDirectory()) throw new Error("not-directory");
+    } catch {
+      throw operationError("Worktree creation is unavailable in this installation");
     }
-    try {
+    const namespace = path.join(managed, this.#managedNamespaceFor(root));
+    await mkdir(namespace, { recursive: true });
+    const target = path.join(namespace, name);
+    if (!inside(managed, target, this.platform) || target === namespace)
+      throw new TypeError("Worktree directory is invalid");
+    return this.#serializeMutation(root, async () => {
+      await this.#verifyRepositoryIdentity(root);
+      try {
+        await stat(target);
+        throw operationError("This worktree directory already exists");
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+      try {
+        await this.#runGit(
+          root,
+          ["show-ref", "--verify", `refs/heads/${branch}`],
+          "Git branch lookup",
+          { readOnly: true },
+        );
+        throw operationError("This branch already exists; choose a new branch name");
+      } catch (error) {
+        if (error.code !== 128) throw error;
+      }
+      const headBefore = await this.#runGit(root, ["rev-parse", "HEAD"], "Git head lookup", { readOnly: true });
       await this.#runGit(
         root,
-        ["show-ref", "--verify", `refs/heads/${branch}`],
-        "Git branch lookup",
-        { readOnly: true },
+        ["worktree", "add", "--quiet", "-b", branch, "--", target],
+        "Git worktree create",
       );
-      throw operationError("This branch already exists; choose a new branch name");
-    } catch (error) {
-      if (error.code !== 128) throw error;
+      // Verify the worktree really exists with the right branch, and that the
+      // main checkout is untouched (same HEAD, no new debris inside it).
+      const { item } = await this.#findListedWorktree(root, target);
+      if (item.branch !== branch)
+        throw operationError("The created worktree has an unexpected branch");
+      const headAfter = await this.#runGit(root, ["rev-parse", "HEAD"], "Git head lookup", { readOnly: true });
+      if (headBefore.stdout.trim() !== headAfter.stdout.trim())
+        throw operationError("The main checkout changed during worktree creation");
+      return this.worktrees({ projectPath });
+    });
+  }
+
+  async #checkWorktreeOwnership(canonicalPath) {
+    // Session/agent ownership gate: a checkout that is clean for Git can
+    // still run an agent turn. Removal must not interrupt live work. The
+    // ownership snapshot comes from the backend pool adapter (read-only);
+    // this service never duplicates session state. Returns null when free,
+    // otherwise a refusal reason. External processes outside the app's
+    // control are undetectable — documented, and unknown state blocks.
+    if (typeof this.getWorktreeOwnership !== "function")
+      throw operationError(
+        "Session ownership is unverifiable right now. Removal is blocked to protect running agents",
+        "WORKTREE_OCCUPIED",
+      );
+    let usage;
+    try {
+      usage = await this.getWorktreeOwnership(canonicalPath);
+    } catch {
+      throw operationError(
+        "Session ownership is unverifiable right now. Removal is blocked to protect running agents",
+        "WORKTREE_OCCUPIED",
+      );
     }
-    await this.#runGit(
-      root,
-      ["worktree", "add", "--quiet", "-b", branch, "--", target],
-      "Git worktree create",
-    );
-    // Verify the worktree really exists before reporting success.
-    const { item } = await this.#findListedWorktree(root, target);
-    void item;
-    return this.worktrees({ projectPath });
+    if (!usage || typeof usage !== "object" || usage.unknown)
+      throw operationError(
+        "Session ownership is unverifiable right now. Removal is blocked to protect running agents",
+        "WORKTREE_OCCUPIED",
+      );
+    const sessions = Array.isArray(usage.sessions) ? usage.sessions : [];
+    const occupied = sessions.filter((s) => s && s.occupied);
+    if (occupied.length > 0) {
+      const summary = occupied
+        .slice(0, 3)
+        .map((s) => {
+          const bits = [];
+          if (s.hasActiveTurn) bits.push("active turn");
+          if (s.hasPendingCallbacks) bits.push("waiting for you");
+          if (s.leaseHeld) bits.push("used by another client");
+          if (s.attached && !bits.length) bits.push("attached session");
+          return `${String(s.sessionId ?? "session").slice(0, 8)} (${bits.join(", ") || "in use"})`;
+        })
+        .join("; ");
+      throw operationError(
+        `This worktree is used by ${occupied.length} session(s): ${summary}. Stop them explicitly first`,
+        "WORKTREE_OCCUPIED",
+      );
+    }
+    return sessions;
   }
 
   async removeWorktree({ projectPath, worktreePath } = {}) {
     // Safe removal only: no --force, no reset --hard, no clean -fd, no
-    // generic directory deletion. Dirty, untracked, unpushed, locked, main
-    // or uncertain worktrees are refused with the reason.
+    // generic directory deletion. Occupied, dirty, untracked, unpushed,
+    // locked, main or uncertain worktrees are refused with the reason.
     const root = await this.#requireRepository(projectPath);
-    await this.#verifyRepositoryIdentity(root);
     const { item, canonicalPath } = await this.#findListedWorktree(root, worktreePath);
-    let canonicalRoot;
-    try {
-      canonicalRoot = await realpath(root);
-    } catch {
-      throw operationError("The selected project folder is unavailable");
-    }
-    const isMain = this.platform === "win32"
-      ? canonicalPath.toLowerCase() === canonicalRoot.toLowerCase()
-      : canonicalPath === canonicalRoot;
-    if (isMain) throw operationError("The main checkout cannot be removed");
-    if (item.locked) throw operationError("This worktree is locked by Git");
-    if (item.bare) throw operationError("Bare repositories cannot be removed here");
-    const details = await this.#worktreeDetails(canonicalPath);
-    if (details.untrackedCount > 0)
-      throw operationError(
-        `This worktree has ${details.untrackedCount} untracked file(s) (${details.untrackedSample.join(", ")}). Move or delete them explicitly first`,
-        "WORKTREE_UNTRACKED",
-      );
-    if (details.dirty)
-      throw operationError(
-        "This worktree has uncommitted changes. Commit, stash or discard them explicitly first",
-        "WORKTREE_DIRTY",
-      );
-    if (typeof details.ahead === "number" && details.ahead > 0)
-      throw operationError(
-        `This worktree is ${details.ahead} commit(s) ahead of its upstream. Push explicitly first`,
-        "WORKTREE_UNPUSHED",
-      );
-    if (!details.upstream) {
-      // No upstream: refuse when the worktree HEAD diverges from the main
-      // checkout HEAD — those commits exist nowhere else we can verify.
-      const mainHead = await this.#runGit(root, ["rev-parse", "HEAD"], "Git head lookup", { readOnly: true });
-      const treeHead = await this.#runGit(canonicalPath, ["rev-parse", "HEAD"], "Git head lookup", { readOnly: true });
-      if (mainHead.stdout.trim() !== treeHead.stdout.trim())
+    return this.#serializeMutation(root, async () => {
+      await this.#verifyRepositoryIdentity(root);
+      // Re-identify after acquiring the lock: the checkout may have changed
+      // while waiting (renamed filesystem, pruned metadata).
+      const checked = await this.#findListedWorktree(root, canonicalPath);
+      const currentPath = checked.canonicalPath;
+      let canonicalRoot;
+      try {
+        canonicalRoot = await realpath(root);
+      } catch {
+        throw operationError("The selected project folder is unavailable");
+      }
+      const isMain = this.platform === "win32"
+        ? currentPath.toLowerCase() === canonicalRoot.toLowerCase()
+        : currentPath === canonicalRoot;
+      if (isMain) throw operationError("The main checkout cannot be removed");
+      if (checked.item.locked) throw operationError("This worktree is locked by Git");
+      if (checked.item.bare) throw operationError("Bare repositories cannot be removed here");
+      await this.#checkWorktreeOwnership(currentPath);
+      const details = await this.#worktreeDetails(currentPath);
+      if (details.untrackedCount > 0)
         throw operationError(
-          "This worktree may contain commits that exist nowhere else (no upstream). Push or merge explicitly first",
+          `This worktree has ${details.untrackedCount} untracked file(s) (${details.untrackedSample.join(", ")}). Move or delete them explicitly first`,
+          "WORKTREE_UNTRACKED",
+        );
+      if (details.dirty)
+        throw operationError(
+          "This worktree has uncommitted changes. Commit, stash or discard them explicitly first",
+          "WORKTREE_DIRTY",
+        );
+      if (typeof details.ahead === "number" && details.ahead > 0)
+        throw operationError(
+          `This worktree is ${details.ahead} commit(s) ahead of its upstream. Push explicitly first`,
           "WORKTREE_UNPUSHED",
         );
-    }
-    // Plain `git worktree remove` refuses dirty worktrees itself; with the
-    // guards above it only removes clean, trackable checkouts.
-    await this.#runGit(root, ["worktree", "remove", "--", canonicalPath], "Git worktree remove");
-    return this.worktrees({ projectPath });
+      if (!details.upstream) {
+        // No upstream: refuse when the worktree HEAD diverges from the main
+        // checkout HEAD — those commits exist nowhere else we can verify.
+        const mainHead = await this.#runGit(root, ["rev-parse", "HEAD"], "Git head lookup", { readOnly: true });
+        const treeHead = await this.#runGit(currentPath, ["rev-parse", "HEAD"], "Git head lookup", { readOnly: true });
+        if (mainHead.stdout.trim() !== treeHead.stdout.trim())
+          throw operationError(
+            "This worktree may contain commits that exist nowhere else (no upstream). Push or merge explicitly first",
+            "WORKTREE_UNPUSHED",
+          );
+      }
+      // Plain `git worktree remove` refuses dirty worktrees itself; with the
+      // guards above it only removes clean, trackable checkouts.
+      await this.#runGit(root, ["worktree", "remove", "--", currentPath], "Git worktree remove");
+      return this.worktrees({ projectPath });
+    });
   }
 
   async pruneWorktrees({ projectPath } = {}) {
     // Removes only stale worktree metadata (gitlink files pointing nowhere).
     // Never deletes real checkouts or user files.
     const root = await this.#requireRepository(projectPath);
-    await this.#verifyRepositoryIdentity(root);
-    await this.#runGit(root, ["worktree", "prune"], "Git worktree prune");
-    return this.worktrees({ projectPath });
+    return this.#serializeMutation(root, async () => {
+      await this.#verifyRepositoryIdentity(root);
+      await this.#runGit(root, ["worktree", "prune"], "Git worktree prune");
+      return this.worktrees({ projectPath });
+    });
   }
 
   async listDirectory({ projectPath, dir } = {}) {
@@ -1306,6 +1483,32 @@ export class GitWorkspaceService {
         "NOT_GIT_REPOSITORY",
       );
     return root;
+  }
+
+  rootKey(root) {
+    return this.platform === "win32" ? root.toLowerCase() : root;
+  }
+
+  async #serializeMutation(root, operation) {
+    // Mutations on the same repository/index run one at a time so concurrent
+    // stage/hunk/commit calls cannot interleave against the same index.lock.
+    // Reads stay fully concurrent; different repositories are independent.
+    const key = this.rootKey(root);
+    const previous = this.mutationChains.get(key) ?? Promise.resolve();
+    let release = () => {};
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => gate);
+    this.mutationChains.set(key, tail);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.mutationChains.get(key) === tail)
+        this.mutationChains.delete(key);
+    }
   }
 
   async #statusAtRoot(root) {

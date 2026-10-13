@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { VibeBackendPool } from "./backend-pool.js";
 import { GitWorkspaceService } from "./git-service.js";
 import { BrowserAuthService } from "./browser-auth.js";
+import { PreviewWindowService } from "./preview-window.js";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 
@@ -37,6 +38,7 @@ let quotaWindow = null;
 let backend = null;
 let gitWorkspace = null;
 let browserAuth = null;
+let localPreview = null;
 const gitLinks = new Set();
 const authLinks = new Map();
 let quitting = false;
@@ -274,6 +276,9 @@ function installIpc() {
     quotaWindow.focus();
     return quotaWindow.loadURL(targets[kind]);
   });
+  handle("vibe:preview-open", (url) => localPreview.open(url));
+  handle("vibe:preview-reload", () => localPreview.reload());
+  handle("vibe:preview-close", () => localPreview.close());
   handle("vibe:window-theme", (theme) => {
     if (!["light", "dark"].includes(theme))
       throw new TypeError("Unsupported window theme");
@@ -397,10 +402,17 @@ async function startApp() {
   backend = new VibeBackendPool({ app, dialog, getWindow: () => mainWindow });
   gitWorkspace = new GitWorkspaceService({
     authorizeProjectRoot: (cwd) => backend.authorizeProjectRoot(cwd),
+    managedWorktreesRoot: path.join(app.getPath("userData"), "worktrees"),
+    getWorktreeOwnership: (worktreePath) =>
+      Promise.resolve(backend.describeWorktreeUsage(worktreePath)),
   });
   browserAuth = new BrowserAuthService({
     app,
     openExternal: (url) => shell.openExternal(url),
+  });
+  localPreview = new PreviewWindowService({
+    createWindow: (options) => new BrowserWindow(options),
+    getMainWindow: () => mainWindow,
   });
   installIpc();
   createWindow();
@@ -414,6 +426,7 @@ app.on("before-quit", (event) => {
   void Promise.allSettled([
     backend.shutdown(),
     browserAuth?.shutdown(),
+    localPreview?.shutdown(),
   ]).finally(() => app.quit());
 });
 

@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import path from "node:path";
 import { VibeBackend } from "./backend.js";
 
 const MAX_CONNECTIONS = 4;
@@ -147,6 +148,106 @@ export class VibeBackendPool extends EventEmitter {
   }
   openExternal(url, shell) {
     return this.primary.openExternal(url, shell);
+  }
+
+  describeWorktreeUsage(canonicalPath, { platform = process.platform } = {}) {
+    // Read-only ownership snapshot for the Git service's removal gate.
+    // Returns frozen plain data — never internal maps. `unknown:true` means
+    // placement cannot be fully verified and removal must be blocked.
+    const frozenEmpty = Object.freeze([]);
+    const fail = () =>
+      Object.freeze({ path: canonicalPath, unknown: true, sessions: frozenEmpty });
+    try {
+      if (this.shuttingDown) return fail();
+      if (typeof canonicalPath !== "string" || !canonicalPath) return fail();
+      const known = this.primary?.knownSessions;
+      if (!(known instanceof Map)) return fail();
+      const same = (a, b) =>
+        platform === "win32"
+          ? String(a).toLowerCase() === String(b).toLowerCase()
+          : String(a) === String(b);
+      const inside = (root, candidate) => {
+        if (typeof candidate !== "string" || !candidate) return false;
+        if (same(root, candidate)) return true;
+        let relative;
+        try {
+          relative = path.relative(root, candidate);
+        } catch {
+          return false;
+        }
+        if (platform === "win32") relative = relative.toLowerCase();
+        return (
+          relative !== "" &&
+          relative !== ".." &&
+          !relative.startsWith(`..${path.sep}`) &&
+          !path.isAbsolute(relative)
+        );
+      };
+      const backends = Array.isArray(this.backends) ? this.backends : [];
+      const owned = this.ownedSessions instanceof Map ? this.ownedSessions : new Map();
+      const leases = this.primary?.sessionLeaseHolders;
+      const pendingBySession = new Map();
+      let unknown = false;
+      for (const backend of backends) {
+        const activeId =
+          typeof backend?.activeSessionId === "string" ? backend.activeSessionId : null;
+        const activeTurn = Boolean(backend?.activeTurnId);
+        if (activeId && activeTurn && !known.has(activeId)) unknown = true;
+        const pending = backend?.pendingCallbacks;
+        if (pending instanceof Map) {
+          for (const entry of pending.values()) {
+            const sid = entry?.sessionId;
+            if (typeof sid !== "string") {
+              unknown = true;
+              continue;
+            }
+            if (!known.has(sid)) {
+              unknown = true;
+              continue;
+            }
+            pendingBySession.set(sid, true);
+          }
+        }
+      }
+      for (const [id, owner] of owned) {
+        if (!known.has(id)) unknown = true;
+        void owner;
+      }
+      const sessions = [];
+      for (const [id, entry] of known) {
+        const cwd = entry?.cwd;
+        if (!inside(canonicalPath, cwd)) continue;
+        const attached =
+          owned.has(id) ||
+          backends.some((backend) => backend?.activeSessionId === id);
+        const hasActiveTurn = backends.some(
+          (backend) => backend?.activeSessionId === id && backend?.activeTurnId,
+        );
+        const hasPendingCallbacks = pendingBySession.get(id) === true;
+        const leaseHeld = leases instanceof Map ? leases.has(id) : false;
+        sessions.push(
+          Object.freeze({
+            sessionId: id,
+            cwd: typeof cwd === "string" ? cwd : null,
+            occupied: Boolean(attached || hasActiveTurn || hasPendingCallbacks || leaseHeld),
+            attached: Boolean(attached),
+            hasActiveTurn: Boolean(hasActiveTurn),
+            hasPendingCallbacks: Boolean(hasPendingCallbacks),
+            leaseHeld: Boolean(leaseHeld),
+            readOnlyChild: entry?.readOnlyChild === true,
+            parentSessionId:
+              typeof entry?.parentSessionId === "string" ? entry.parentSessionId : null,
+          }),
+        );
+      }
+      return Object.freeze({
+        path: canonicalPath,
+        unknown,
+        sessions: Object.freeze(sessions.slice(0, 20)),
+      });
+    } catch {
+      return Object.freeze({ path: canonicalPath, unknown: true, sessions: [] });
+    }
   }
 
   async shutdown() {

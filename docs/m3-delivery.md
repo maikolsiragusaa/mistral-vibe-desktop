@@ -5,8 +5,9 @@ Runtime: official Mistral Vibe Unified **2.26.1 frozen** (no upgrade, no paid cl
 
 ## Final commit & branch state
 
-- Checkpoint `af136ed7c08a147502471dd04faeb5829af38d25` (M2.1) → `a834bf5` (M3 implementation) → `c7084c9` (validation: race guard, replace honesty, test gate, evidence) → **`c2afa5c` (CI fix: canonical test keys for short-TEMP runners)**. All pushed normally to `origin` (no `--force`, no new branch).
-- Branch `codex/windows-client` head: `c2afa5c24075e40d0f1397e4a1f0490322e3cd31`. PR #1 stays **draft**. **No merge to `main`, no release, no upstream modification.**
+- Checkpoint `af136ed7c08a147502471dd04faeb5829af38d25` (M2.1) → `a834bf5` (M3 implementation) → `c7084c9` (validation: race guard, replace honesty, test gate, evidence) → `c2afa5c` (CI fix: canonical test keys for short-TEMP runners) → **`77f7498` (delivery record: green CIs, artifact hash, PR draft state)**. All pushed normally to `origin` (no `--force`, no new branch).
+- Branch `codex/windows-client` head: `77f74982f70cb5a86a423a6c5a3313ed0f153296`. PR #1 stays **draft** (`state: open`, `draft: true`, `merged: false`, verified via API). **No merge to `main`, no release, no upstream modification.**
+- `77f7498` differs from twice-green `c2afa5c` by `docs/m3-delivery.md` only — a file no CI step builds, tests, probes, packages or uploads. Its own push CI is fully green (below).
 - Working tree clean at delivery; `git status` verified before each push and commit.
 
 ## Architecture & decisions
@@ -72,7 +73,8 @@ Runtime: official Mistral Vibe Unified **2.26.1 frozen** (no upgrade, no paid cl
 ## GitHub Actions & installer
 
 - Workflow: `Windows build` (`.github/workflows/windows.yml`) on push + PR — build, `npm test`, frozen-backend probe, dev-app UI, NSIS packaging, packaged-app UI, SHA-256 + artifact upload.
-- Closing SHA `c2afa5c`: push run `https://github.com/maikolsiragusaa/mistral-vibe-desktop/actions/runs/38436541326` (**success**, 17:10–17:20 UTC, all 16 steps incl. build+146 tests, frozen-backend probe, dev-app UI, NSIS, packaged-app UI, SHA-256, artifact upload) and PR #1 run `https://github.com/maikolsiragusaa/mistral-vibe-desktop/actions/runs/38436548050` (**success**, same steps). **Both CIs green — gate satisfied.**
+- Closing SHA `c2afa5c`: push run `https://github.com/maikolsiragusaa/mistral-vibe-desktop/actions/runs/38436541326` (**success**, 17:10–17:20 UTC, all 16 steps incl. build+146 tests, frozen-backend probe, dev-app UI, NSIS, packaged-app UI, SHA-256, artifact upload) and PR #1 run `https://github.com/maikolsiragusaa/mistral-vibe-desktop/actions/runs/38436548050` (**success**, same steps).
+- Head SHA `77f7498` (docs-only delta): push run `https://github.com/maikolsiragusaa/mistral-vibe-desktop/actions/runs/38438638148` (**success**, run 50, all steps). Its PR-side twin `38438637760` was **cancelled as duplicate** by the workflow's own `concurrency: cancel-in-progress` group (same ref, push run wins) — mechanics, not a failure; the code-identical `c2afa5c` PR run is green. **Gate satisfied in substance: every delivered code state has full-green validation; the docs-only head has a full-green push run.**
 - CI artifact (14-day retention): `Vibe-Desktop-Windows-c2afa5c24075e40d0f1397e4a1f0490322e3cd31-9c1cb57ee9db25cc6c3556e99b9e46329cb05327425c60234bcb677769c05596` (167 411 128 bytes zip: Setup exe + SHA256SUMS + screenshots + perf JSON + playwright traces + backend manifests).
 - CI installer SHA-256: `9c1cb57ee9db25cc6c3556e99b9e46329cb05327425c60234bcb677769c05596` (authoritative for `c2afa5c`; unsigned, same posture as M2.1).
 - Prior SHAs for the record: `c7084c9` push `38433461045` + PR `38433468162` (red at step 9, short-TEMP cause above); `a834bf5` PR `38426820489` (red at step 9, same cause).

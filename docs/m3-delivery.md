@@ -5,10 +5,9 @@ Runtime: official Mistral Vibe Unified **2.26.1 frozen** (no upgrade, no paid cl
 
 ## Final commit & branch state
 
-- Checkpoint `af136ed7c08a147502471dd04faeb5829af38d25` (M2.1) → `a834bf5` (M3 implementation, pushed) → closing validation commit below (pushed, no force).
-- Branch `codex/windows-client` pushed normally to `origin` (no `--force`, no new branch). PR #1 stays **draft**. **No merge to `main`, no release, no upstream modification.**
-- Closing commit: (see `git log --oneline -3` — the commit after `a834bf5` titled `M3 validation: …`).
-- Working tree clean at delivery; `git status` verified before push and before commit.
+- Checkpoint `af136ed7c08a147502471dd04faeb5829af38d25` (M2.1) → `a834bf5` (M3 implementation) → `c7084c9` (validation: race guard, replace honesty, test gate, evidence) → **`c2afa5c` (CI fix: canonical test keys for short-TEMP runners)**. All pushed normally to `origin` (no `--force`, no new branch).
+- Branch `codex/windows-client` head: `c2afa5c24075e40d0f1397e4a1f0490322e3cd31`. PR #1 stays **draft**. **No merge to `main`, no release, no upstream modification.**
+- Working tree clean at delivery; `git status` verified before each push and commit.
 
 ## Architecture & decisions
 
@@ -68,13 +67,16 @@ Runtime: official Mistral Vibe Unified **2.26.1 frozen** (no upgrade, no paid cl
 2. **Rapid tab-switch race in `openSession` (code defect, fixed).** Two overlapping `openSession` calls could let the slower one `adopt()` its stale session over the newer one (`pendingOpen` was write-only). Fix: per-call token, stale calls return before `adopt` (`src/renderer/App.tsx`).
 3. **Loop replace partial failure hid duplication (code defect, fixed).** If `loops/create` succeeded but `loops/delete` failed, the UI showed a bare error on a stale list — the duplicate was invisible. Fix: refresh the list and report explicitly that two loops now exist with an instruction to delete one (`src/renderer/LoopsPanel.tsx`).
 4. **Loaded-runner variance (not a bug, documented).** One dev-app run failed at `expect(overlay.visible).toBe(true)` (line 494, Windows shell/compositor state) and the pre-fix run executed a stale transform per the M2.1-noted cache hazard. Neither touches M3 code paths (titlebar code unchanged). Two subsequent full dev runs + both packaged runs are green; CI on a clean runner is the arbiter (see below).
+5. **CI step-9 red on short-TEMP runners (deterministic, test-only bug, fixed in `c2afa5c`).** Both `a834bf5` and `c7084c9` failed `Build renderer and run backend tests` (exit 1, full ~66 s run) while 146/146 pass locally in four contexts (normal, `--test-concurrency=2`, clean-clone + `npm ci` + `CI=true` + real backend, new-tests loop ×2). Cause: windows-latest exposes TEMP through short 8.3 names (`RUNNER~1`); the service correctly keys `worktreeRoots` by canonical path, but `backend-prefs-m3` indexed the result with the raw `mkdtemp` path → `undefined` on CI, green locally. Proved by replaying with a short TEMP alias (old assertion fails with `actual: undefined`, fixed one passes). Fix is test-only (index by `realpath`, hermetic `mkdtemp` custom root); production already canonicalizes everywhere (dialog paths, realpath identity). `worktree-custom-root` path comparison hardened to `realpath` on both sides. Step-9 durations match a full pass (M2.1 green step 9: 70 s), confirming the suite ran to completion rather than crashing early.
 
 ## GitHub Actions & installer
 
 - Workflow: `Windows build` (`.github/workflows/windows.yml`) on push + PR — build, `npm test`, frozen-backend probe, dev-app UI, NSIS packaging, packaged-app UI, SHA-256 + artifact upload.
-- Actions links for the closing SHA: push run + PR #1 run at `https://github.com/maikolsiragusaa/mistral-vibe-desktop/actions` (workflow `Windows build`, commit = closing SHA below). Both must be green; status recorded at push time + follow-up check (see Final commit & branch state).
-- Local installer: `out/Vibe-Desktop-0.3.0-x64-Setup.exe`, 157.2 MiB.
-- SHA-256: `1b4c26de5cbea75681fe0cb7427a5aee5488ee30cca14e5de054ad38f5e3df02` (unsigned, `NotSigned`, same posture as M2.1).
+- Closing SHA `c2afa5c`: push run `https://github.com/maikolsiragusaa/mistral-vibe-desktop/actions/runs/38436541326` (**success**, 17:10–17:20 UTC, all 16 steps incl. build+146 tests, frozen-backend probe, dev-app UI, NSIS, packaged-app UI, SHA-256, artifact upload) and PR #1 run `https://github.com/maikolsiragusaa/mistral-vibe-desktop/actions/runs/38436548050` (**success**, same steps). **Both CIs green — gate satisfied.**
+- CI artifact (14-day retention): `Vibe-Desktop-Windows-c2afa5c24075e40d0f1397e4a1f0490322e3cd31-9c1cb57ee9db25cc6c3556e99b9e46329cb05327425c60234bcb677769c05596` (167 411 128 bytes zip: Setup exe + SHA256SUMS + screenshots + perf JSON + playwright traces + backend manifests).
+- CI installer SHA-256: `9c1cb57ee9db25cc6c3556e99b9e46329cb05327425c60234bcb677769c05596` (authoritative for `c2afa5c`; unsigned, same posture as M2.1).
+- Prior SHAs for the record: `c7084c9` push `38433461045` + PR `38433468162` (red at step 9, short-TEMP cause above); `a834bf5` PR `38426820489` (red at step 9, same cause).
+- Local installer (informational, superseded by the CI artifact): `out/Vibe-Desktop-0.3.0-x64-Setup.exe`, 157.2 MiB, SHA-256 `1b4c26de5cbea75681fe0cb7427a5aee5488ee30cca14e5de054ad38f5e3df02` (unsigned, `NotSigned`, same posture as M2.1; built pre-`c2afa5c`, hence differing from the CI hash).
 - Note: `out/` also holds older local `0.1.0`/`0.2.0` setup exes from previous builds; CI builds on a clean runner where exactly one installer exists (enforced by the workflow step).
 
 ## Cloud: verified vs official-surface-only

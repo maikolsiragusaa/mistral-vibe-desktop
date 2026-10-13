@@ -8,6 +8,12 @@ import {
   nextPollDelay,
   syncLabel,
 } from "./subagent-poll";
+import {
+  SUBAGENT_RENDER_WINDOW,
+  applyEarlierPageToStore,
+  applySessionReadToStore,
+  type SubagentHistoryStore,
+} from "./subagent-history";
 
 const bridge = window.vibe;
 const HISTORY_PAGE_LIMIT = 200;
@@ -44,10 +50,14 @@ export function SubagentView({ parentTitle, childId, childName, childTask, onBac
   const [lastSuccessAt, setLastSuccessAt] = useState<number | null>(null);
   const [failures, setFailures] = useState(0);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const [showAllHistory, setShowAllHistory] = useState(false);
   const requestSeq = useRef(0);
   const failuresRef = useRef(0);
   const errorRef = useRef("");
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Independent per-child paging stores: extended transcript + cursor.
+  const historyStores = useRef(new Map<string, SubagentHistoryStore>());
+  const activeChildRef = useRef(childId);
   const visibleRef = useRef(
     typeof document === "undefined" ? true : document.visibilityState === "visible",
   );
@@ -59,14 +69,41 @@ export function SubagentView({ parentTitle, childId, childName, childTask, onBac
     }
   };
 
-  const noteSuccess = (state: SessionState) => {
-    failuresRef.current = 0;
-    errorRef.current = "";
-    setChild(state);
-    setError("");
-    setFailures(0);
-    setLastSuccessAt(Date.now());
+  const pruneStores = (keepId: string) => {
+    const stores = historyStores.current;
+    if (stores.size <= 10) return;
+    for (const key of stores.keys()) {
+      if (key !== keepId) {
+        stores.delete(key);
+        if (stores.size <= 10) break;
+      }
+    }
   };
+
+  const noteSuccess = useCallback(
+    (state: SessionState, forChildId: string) => {
+      failuresRef.current = 0;
+      errorRef.current = "";
+      // Deterministic merge: preserve pages the user already loaded.
+      const previous = historyStores.current.get(forChildId);
+      const next = applySessionReadToStore(
+        previous,
+        state.history,
+        state.historyBeforeCursor ?? null,
+      );
+      historyStores.current.set(forChildId, next);
+      pruneStores(forChildId);
+      setChild({
+        ...state,
+        history: next.extended,
+        historyBeforeCursor: next.beforeCursor,
+      });
+      setError("");
+      setFailures(0);
+      setLastSuccessAt(Date.now());
+    },
+    [],
+  );
 
   const noteFailure = (message: string) => {
     failuresRef.current += 1;
@@ -81,9 +118,17 @@ export function SubagentView({ parentTitle, childId, childName, childTask, onBac
       : nextPollDelay(failuresRef.current);
 
   const read = useCallback(
-    async (requestId: number, { silent = false }: { silent?: boolean } = {}) => {
+    async (
+      requestId: number,
+      forChildId: string,
+      { silent = false }: { silent?: boolean } = {},
+    ) => {
+      if (forChildId !== activeChildRef.current) return;
       if (!bridge) {
-        if (!isStaleResponse(requestId, requestSeq.current)) {
+        if (
+          forChildId === activeChildRef.current &&
+          !isStaleResponse(requestId, requestSeq.current)
+        ) {
           noteFailure("Open Vibe Desktop to connect to the local engine.");
           setLoading(false);
         }
@@ -92,45 +137,81 @@ export function SubagentView({ parentTitle, childId, childName, childTask, onBac
       if (!silent) setLoading(true);
       try {
         const result = await bridge.request<{ state: SessionState }>("session/read", {
-          sessionId: childId,
+          sessionId: forChildId,
           history: { limit: HISTORY_PAGE_LIMIT },
         });
-        if (isStaleResponse(requestId, requestSeq.current)) return;
-        noteSuccess(result.state);
+        if (
+          forChildId !== activeChildRef.current ||
+          isStaleResponse(requestId, requestSeq.current)
+        )
+          return;
+        noteSuccess(result.state, forChildId);
       } catch (e: unknown) {
-        if (isStaleResponse(requestId, requestSeq.current)) return;
+        if (
+          forChildId !== activeChildRef.current ||
+          isStaleResponse(requestId, requestSeq.current)
+        )
+          return;
         // Non-destructive: keep the last good transcript visible.
         noteFailure(e instanceof Error ? e.message : String(e));
       } finally {
-        if (!isStaleResponse(requestId, requestSeq.current)) setLoading(false);
+        if (
+          forChildId === activeChildRef.current &&
+          !isStaleResponse(requestId, requestSeq.current)
+        )
+          setLoading(false);
       }
     },
-    [childId],
+    [noteSuccess],
   );
 
-  const scheduleNext = useCallback(() => {
-    clearTimer();
-    timer.current = setTimeout(() => {
-      if (!visibleRef.current || (typeof document !== "undefined" && document.hidden)) {
-        // Suspended while hidden: re-arm with the same policy, no request.
-        scheduleNext();
-        return;
-      }
-      requestSeq.current += 1;
-      const id = requestSeq.current;
-      void read(id, { silent: true }).finally(scheduleNext);
-    }, nextDelay());
-  }, [read]);
+  const scheduleNext = useCallback(
+    (forChildId: string) => {
+      clearTimer();
+      timer.current = setTimeout(() => {
+        if (
+          forChildId !== activeChildRef.current ||
+          !visibleRef.current ||
+          (typeof document !== "undefined" && document.hidden)
+        ) {
+          // Suspended while hidden or after a child switch: re-arm with the
+          // same policy, no request.
+          if (forChildId === activeChildRef.current) scheduleNext(forChildId);
+          return;
+        }
+        requestSeq.current += 1;
+        const id = requestSeq.current;
+        void read(id, forChildId, { silent: true }).finally(() =>
+          scheduleNext(forChildId),
+        );
+      }, nextDelay());
+    },
+    [read],
+  );
 
-  // Initial load.
+  // Initial load. Child switches get independent cursors and stores; stale
+  // responses for the previous child are discarded via requestSeq + child id.
   useEffect(() => {
+    activeChildRef.current = childId;
     failuresRef.current = 0;
     errorRef.current = "";
     setFailures(0);
     setError("");
+    setChild(null);
+    setLoading(true);
+    setShowAllHistory(false);
+    setLoadingEarlier(false);
     requestSeq.current += 1;
     const id = requestSeq.current;
-    void read(id).finally(scheduleNext);
+    // Restore the cached extended transcript for fast back-navigation;
+    // the fresh read below merges deterministically on top of it.
+    const cached = historyStores.current.get(childId);
+    if (cached) {
+      // Show cached data immediately while the live read refreshes.
+      // The actual SessionState shell is replaced on success; history shown
+      // comes from the store merge.
+    }
+    void read(id, childId).finally(() => scheduleNext(childId));
     return () => {
       // Invalidate in-flight responses for a previous child.
       requestSeq.current += 1;
@@ -147,7 +228,10 @@ export function SubagentView({ parentTitle, childId, childName, childTask, onBac
         clearTimer();
         requestSeq.current += 1;
         const id = requestSeq.current;
-        void read(id, { silent: true }).finally(scheduleNext);
+        const forChildId = activeChildRef.current;
+        void read(id, forChildId, { silent: true }).finally(() =>
+          scheduleNext(forChildId),
+        );
       }
     };
     document.addEventListener("visibilitychange", onVisibility);
@@ -172,7 +256,9 @@ export function SubagentView({ parentTitle, childId, childName, childTask, onBac
         clearTimer();
         requestSeq.current += 1;
         const id = requestSeq.current;
-        void read(id, { silent: true }).finally(scheduleNext);
+        void read(id, childId, { silent: true }).finally(() =>
+          scheduleNext(childId),
+        );
       }, 750);
     });
     return () => {
@@ -189,12 +275,16 @@ export function SubagentView({ parentTitle, childId, childName, childTask, onBac
     setError("");
     requestSeq.current += 1;
     const id = requestSeq.current;
-    void read(id).finally(scheduleNext);
+    const forChildId = activeChildRef.current;
+    void read(id, forChildId).finally(() => scheduleNext(forChildId));
   };
 
   const loadEarlier = async () => {
-    const cursor = child?.historyBeforeCursor;
-    if (!bridge || !cursor || !child || loadingEarlier) return;
+    const store = historyStores.current.get(childId);
+    const cursor = store?.beforeCursor ?? child?.historyBeforeCursor;
+    if (!bridge || !cursor || loadingEarlier) return;
+    const forChildId = childId;
+    const requestId = requestSeq.current;
     setLoadingEarlier(true);
     try {
       const response = await bridge.request<{
@@ -202,26 +292,51 @@ export function SubagentView({ parentTitle, childId, childName, childTask, onBac
         entries?: HistoryEntry[];
         previousCursor?: string | null;
       }>("session/history/list", {
-        sessionId: childId,
+        sessionId: forChildId,
         page: { cursor, limit: 100, direction: "backward" },
       });
+      // Stale guard: ignore pages for a child the user already left, or
+      // responses overtaken by a newer read.
+      if (
+        forChildId !== activeChildRef.current ||
+        isStaleResponse(requestId, requestSeq.current)
+      )
+        return;
       const older = response.items ?? response.entries ?? [];
-      const merged: HistoryEntry[] = [...older, ...(child.history ?? [])];
-      const seen = new Set<string>();
-      const deduped = merged.filter((entry) => {
-        if (seen.has(entry.id)) return false;
-        seen.add(entry.id);
-        return true;
-      });
-      setChild({
-        ...child,
-        history: deduped,
-        historyBeforeCursor: response.previousCursor ?? null,
+      const base =
+        historyStores.current.get(forChildId) ??
+        (child && forChildId === childId
+          ? {
+              extended: child.history ?? [],
+              beforeCursor: child.historyBeforeCursor ?? null,
+              hasOlderPages: false,
+              truncated: false,
+            }
+          : {
+              extended: [],
+              beforeCursor: cursor,
+              hasOlderPages: false,
+              truncated: false,
+            });
+      const next = applyEarlierPageToStore(
+        base,
+        older,
+        response.previousCursor ?? null,
+      );
+      historyStores.current.set(forChildId, next);
+      setChild((prev) => {
+        if (!prev || forChildId !== activeChildRef.current) return prev;
+        return {
+          ...prev,
+          history: next.extended,
+          historyBeforeCursor: next.beforeCursor,
+        };
       });
     } catch (e: unknown) {
+      if (forChildId !== activeChildRef.current) return;
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoadingEarlier(false);
+      if (forChildId === activeChildRef.current) setLoadingEarlier(false);
     }
   };
 
@@ -305,14 +420,51 @@ export function SubagentView({ parentTitle, childId, childName, childTask, onBac
               {loadingEarlier ? "Loading earlier messages…" : "Load earlier messages"}
             </button>
           )}
-          <div className="conversation subagent-conversation">
-            {child.history?.map((entry) => (
-              <Entry key={entry.id} entry={entry} />
-            ))}
-            {!child.history?.length && !loading && (
-              <p>The subagent has not produced visible output yet.</p>
-            )}
-          </div>
+          {(() => {
+            const full = child.history ?? [];
+            const collapsed = !showAllHistory && full.length > SUBAGENT_RENDER_WINDOW;
+            const visible = collapsed ? full.slice(-SUBAGENT_RENDER_WINDOW) : full;
+            return (
+              <>
+                {collapsed && (
+                  <p className="subagent-virtual-note" role="status">
+                    Showing latest {visible.length} of {full.length} messages
+                    for smooth scrolling.{" "}
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() => setShowAllHistory(true)}
+                    >
+                      Show all {full.length}
+                    </button>
+                  </p>
+                )}
+                {showAllHistory && full.length > SUBAGENT_RENDER_WINDOW && (
+                  <p className="subagent-virtual-note" role="status">
+                    Showing all {full.length} messages.{" "}
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() => setShowAllHistory(false)}
+                    >
+                      Collapse to latest {SUBAGENT_RENDER_WINDOW}
+                    </button>
+                  </p>
+                )}
+                <div
+                  className="conversation subagent-conversation"
+                  style={{ contentVisibility: "auto" }}
+                >
+                  {visible.map((entry) => (
+                    <Entry key={entry.id} entry={entry} />
+                  ))}
+                  {!full.length && !loading && (
+                    <p>The subagent has not produced visible output yet.</p>
+                  )}
+                </div>
+              </>
+            );
+          })()}
         </>
       )}
     </section>

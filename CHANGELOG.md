@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.3.0-M2 — Git, worktrees & development workspace (unreleased baseline 0.3.0)
+
+M2 turns Vibe Desktop into a working development workspace on the official
+Unified harness (2.26.1): review agent changes, stage hunks, commit, navigate
+worktrees, inspect files and prepare PRs — no second harness, no IDE fork.
+
+- Hardening gate (M2.0): `session/compact` is never auto-probed — mounting the
+  menu or opening it performs no RPC; mutative methods verify only via explicit
+  user actions; capability cache is bound to the runtime version/instance with
+  invalidation; official discovery only ever marks verified, never unsupported
+  from the registry; unknown is the safe default. Subagent history pages
+  persist across live `session/read` polling (deterministic id-deduped merge,
+  per-child cursors, stale guards, 1000-entry cap, render windowing past 400
+  rows). Windows paths: realpath identity everywhere, ADS/trailing-dot `.git`
+  guards, symlink-to-directory rejection, repo-identity re-verification before
+  every mutation (TOCTOU), sibling worktrees allowed only as explicitly
+  selected independent workspaces.
+- Git (M2.1): Changes groups Staged vs Working tree with search and
+  staged/unstaged/conflict filters plus rename display; diff viewer with line
+  numbers, unified/side-by-side, hunk collapse, hunk navigation, diff search,
+  progressive rendering, binary/CRLF handling; hunk stage/unstage via
+  `git apply --cached [--reverse]` with exact-match stale-guard against a
+  freshly regenerated diff and verified index state (multi-hunk, concurrent
+  edit, CRLF and dirty-repo tests); explicit commit composer and history.
+- Worktrees (M2.2): list enriched with dirty/untracked/ahead/behind state;
+  circumscribed local creation under `.worktrees/` (new branches only, never
+  overwrites, never moves the session); safe-only removal (dirty, untracked,
+  unpushed, locked, main or uncertain worktrees refused with reasons — never
+  `--force`, `reset --hard`, `clean -fd` or directory deletion); stale
+  metadata pruning. Harness audit: 2.26.1 exposes list/remove/reap/prune/
+  checkouts but no creation RPC, hence the bounded local adapter.
+- Explorer & preview (M2.3): lazy read-only file tree with search, recent and
+  modified shortcuts plus Git badges; previews for code/text, markdown,
+  JSON, images (data URLs), with binary/too-large/encoding guards and no
+  file privileges; optional loopback web preview restricted to explicitly
+  submitted localhost URLs inside a same-origin-less sandboxed frame — no
+  command is ever launched automatically.
+- PR & review (M2.4/5): PR list plus read-only details (files, checks,
+  commits, description) with explicit browser opening; creation stays
+  explicit via authenticated `gh` on already-published branches; Git diff and
+  engine review stay visually distinct; attribution keeps baseline vs
+  observed-agent-write vs unknown-source labels with a review-flow hint
+  (hunks → stage → commit → PR). No approval/merge from the client.
+- Suite: 112 tests passing (was 87). Production build clean, `npm audit`
+  clean. Residual: Playwright Electron screenshots and NSIS packaged-app
+  tests were not re-run in this iteration; multi-session worktree ownership
+  display and server-start vs preview distinction remain backlog.
+
 ## 0.3.0-M1.1 — Stabilization & reliability (unreleased baseline 0.3.0)
 
 P0/P1 hardening on top of M1, no new large features, no harness changes.

@@ -31,10 +31,13 @@ import {
 } from "./drafts";
 import { CompactMenuItem } from "./CompactMenuItem";
 import {
+  adoptDiscoveredCapabilities,
   forgetSession,
   getCapability,
   isUnsupportedError,
+  noteSessionRuntime,
   setCapability,
+  setRuntimeIdentity,
 } from "./capabilities";
 import "./desktop.css";
 import {
@@ -127,6 +130,7 @@ type Attachment = {
 export function App() {
   const [status, setStatus] = useState<Status>({ state: "connecting" });
   const [version, setVersion] = useState("");
+  const versionRef = useRef("");
   const [setup, setSetup] = useState<Setup | null>(null);
   const [preferences, setPreferences] = useState<Preferences>({
     theme: "light",
@@ -391,6 +395,17 @@ export function App() {
       const result = await request<{ runtime: Runtime }>("runtime/read", {
         sessionId,
       });
+      // Official discovery when the engine advertises it: adopt only
+      // verified entries, never unsupported-from-registry.
+      try {
+        const advertised = (result.runtime as unknown as Record<string, unknown>)
+          ?.capabilities;
+        const currentVersion = versionRef.current || undefined;
+        adoptDiscoveredCapabilities(sessionId, advertised, currentVersion);
+        if (currentVersion) noteSessionRuntime(sessionId, currentVersion);
+      } catch {
+        /* Discovery is opportunistic; unknown stays unknown. */
+      }
       if (stateRef.current?.session.id === sessionId)
         setRuntime(result.runtime);
       try {
@@ -614,6 +629,11 @@ export function App() {
       setPreferences(stored);
       const result = await bridge.connect();
       setVersion(result.serverInfo.version);
+      versionRef.current = result.serverInfo.version ?? "";
+      // Bind capability cache to this runtime instance/version.
+      setRuntimeIdentity(
+        `${result.serverInfo.name ?? "vibe"}@${result.serverInfo.version ?? "unknown"}`,
+      );
       setSetup(result.setup);
       setStatus({ state: "ready" });
       await listSessions();

@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { FormEvent } from "react";
+import type { FormEvent, ReactNode } from "react";
 import {
   ArrowUpRight,
   Check,
   Clock3,
   ExternalLink,
   FileCode2,
+  Folder,
   GitBranch,
   GitPullRequest,
+  Globe,
   History,
   LoaderCircle,
   Minus,
@@ -18,9 +20,31 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
+import ReactMarkdown from "react-markdown";
 import "./git-workspace.css";
+import { DiffViewer } from "./DiffViewer";
+import { isAllowedPreviewUrl, previewUrlProblem } from "./preview-url";
 
-type GitTab = "changes" | "history" | "worktrees" | "pull-requests";
+type GitTab = "changes" | "files" | "history" | "worktrees" | "pull-requests";
+
+interface DirEntry {
+  name: string;
+  path: string;
+  kind: "directory" | "file";
+  symlink?: boolean;
+  size?: number;
+}
+
+interface FilePreview {
+  path: string;
+  kind: string;
+  size?: number;
+  text?: string;
+  truncated?: boolean;
+  maxBytes?: number;
+  mime?: string;
+  base64?: string;
+}
 
 interface GitFile {
   path: string;
@@ -76,6 +100,11 @@ interface GitWorktree {
   bare?: boolean;
   locked?: string | boolean;
   prunable?: string | boolean;
+  dirty?: boolean | null;
+  ahead?: number | null;
+  behind?: number | null;
+  upstream?: string | null;
+  untrackedCount?: number;
 }
 
 interface PullRequest {
@@ -95,6 +124,16 @@ interface PullRequestState {
   authenticated: boolean;
   repository: string | null;
   items: PullRequest[];
+}
+
+interface PullRequestDetails extends PullRequest {
+  repository: string;
+  number: number;
+  body: string;
+  commits: number;
+  files: { path: string; additions: number; deletions: number }[];
+  filesTruncated?: boolean;
+  checks: { name: string; status: string; conclusion: string | null }[];
 }
 
 export interface GitWorkspaceProps {
@@ -194,10 +233,30 @@ export function GitWorkspace({
   const [prBody, setPrBody] = useState("");
   const [prBase, setPrBase] = useState("");
   const [prDraft, setPrDraft] = useState(false);
+  const [selectedPr, setSelectedPr] = useState<number | null>(null);
+  const [prDetails, setPrDetails] = useState<PullRequestDetails | null>(null);
+  const [prDetailsLoading, setPrDetailsLoading] = useState(false);
+  const [wtBranch, setWtBranch] = useState("");
+  const [showWtDialog, setShowWtDialog] = useState(false);
+  const [treeCache, setTreeCache] = useState<Map<string, DirEntry[]>>(new Map());
+  const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set([""]));
+  const [treeLoading, setTreeLoading] = useState(false);
+  const [previewPath, setPreviewPath] = useState<string | null>(null);
+  const [preview, setPreview] = useState<FilePreview | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [recentPaths, setRecentPaths] = useState<string[]>([]);
+  const [treeQuery, setTreeQuery] = useState("");
+  const [webUrl, setWebUrl] = useState("");
+  const [framedUrl, setFramedUrl] = useState<string | null>(null);
+  const [frameKey, setFrameKey] = useState(0);
   const [createdPrUrl, setCreatedPrUrl] = useState<string | null>(null);
   const [showPrDialog, setShowPrDialog] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [fileQuery, setFileQuery] = useState("");
+  const [fileFilter, setFileFilter] = useState<
+    "all" | "staged" | "unstaged" | "conflicted"
+  >("all");
   const [diffRevision, setDiffRevision] = useState(0);
   const [historyRevision, setHistoryRevision] = useState(0);
   const [worktreeRevision, setWorktreeRevision] = useState(0);
@@ -218,7 +277,111 @@ export function GitWorkspace({
   );
   const stagedCount = status?.files.filter((file) => file.staged).length ?? 0;
   const changesCount = status?.files.length ?? 0;
+  const conflictedCount = status?.files.filter((file) => file.conflicted).length ?? 0;
   const selectedFile = status?.files.find((file) => file.path === selectedPath);
+  const visibleFiles = useMemo(() => {
+    const needle = fileQuery.trim().toLowerCase();
+    return (status?.files ?? []).filter((file) => {
+      if (fileFilter === "staged" && !file.staged) return false;
+      if (fileFilter === "unstaged" && !(file.unstaged || file.untracked)) return false;
+      if (fileFilter === "conflicted" && !file.conflicted) return false;
+      if (
+        needle &&
+        !`${file.path} ${file.originalPath ?? ""}`.toLowerCase().includes(needle)
+      )
+        return false;
+      return true;
+    });
+  }, [status?.files, fileFilter, fileQuery]);
+  const stagedFiles = visibleFiles.filter((file) => file.staged);
+  const workingFiles = visibleFiles.filter(
+    (file) => !file.staged || file.unstaged || file.untracked,
+  );
+  const renderFileRow = (file: GitFile) => {
+    const selected = selectedPath === file.path;
+    const label = fileStateLabel(file, baselinePaths, agentPathSet);
+    const displayName = file.originalPath
+      ? `${file.originalPath} → ${file.path}`
+      : file.path;
+    return (
+      <article
+        key={file.path}
+        role="listitem"
+        className={
+          selected ? "git-workspace__file is-selected" : "git-workspace__file"
+        }
+      >
+        <button
+          type="button"
+          className="git-workspace__file-select"
+          aria-pressed={selected}
+          onClick={() => {
+            setSelectedPath(file.path);
+            setShowStagedDiff(false);
+          }}
+          title={displayName}
+        >
+          <FileCode2 size={15} />
+          <span className="git-workspace__file-name">{displayName}</span>
+          <span
+            className={
+              file.conflicted
+                ? "git-workspace__file-badge is-conflict"
+                : file.staged && !file.unstaged && !file.untracked
+                  ? "git-workspace__file-badge is-staged"
+                  : "git-workspace__file-badge"
+            }
+            title={
+              file.conflicted
+                ? "Merge conflict"
+                : file.staged && !file.unstaged && !file.untracked
+                  ? "Staged in index"
+                  : file.untracked
+                    ? "Untracked"
+                    : "Modified in working tree"
+            }
+          >
+            {file.untracked
+              ? "U"
+              : `${file.indexStatus}${file.worktreeStatus}`}
+          </span>
+        </button>
+        <div className="git-workspace__file-meta">
+          <span
+            className={`git-workspace__origin git-workspace__origin--${label === "Pre-existing" ? "old" : label === "Agent touched" ? "agent" : "unknown"}`}
+          >
+            {label}
+          </span>
+          <span className="git-workspace__file-actions">
+            {(file.unstaged || file.untracked) && (
+              <button
+                type="button"
+                className="git-workspace__mini-button"
+                onClick={() => void mutateFile("stage", file.path)}
+                disabled={working}
+                title={`Stage ${file.path}`}
+                aria-label={`Stage ${file.path}`}
+              >
+                <Plus size={13} /> Stage
+              </button>
+            )}
+            {file.staged && (
+              <button
+                type="button"
+                className="git-workspace__mini-button"
+                onClick={() => void mutateFile("unstage", file.path)}
+                disabled={working}
+                title={`Unstage ${file.path}`}
+                aria-label={`Unstage ${file.path}`}
+              >
+                <Minus size={13} /> Unstage
+              </button>
+            )}
+          </span>
+        </div>
+      </article>
+    );
+  };
   const baselinePaths = baseline.current ?? new Set<string>();
 
   const reportError = useCallback(
@@ -278,6 +441,14 @@ export function GitWorkspace({
     setShowStagedDiff(false);
     setDiff(null);
     setHistory(null);
+    setTreeCache(new Map());
+    setExpandedDirs(new Set([""]));
+    setPreviewPath(null);
+    setPreview(null);
+    setSelectedPr(null);
+    setPrDetails(null);
+    setRecentPaths([]);
+    setFramedUrl(null);
     setWorktrees(null);
     setPullRequests(null);
     setCreatedPrUrl(null);
@@ -383,6 +554,34 @@ export function GitWorkspace({
     await loadStatus(false);
   };
 
+  const mutateHunk = async (
+    method: "stageHunk" | "unstageHunk",
+    filePath: string,
+    header: string,
+    lines: string[],
+  ) => {
+    setWorking(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await gitRequest<GitStatus>(method, {
+        projectPath,
+        path: filePath,
+        header,
+        lines,
+      });
+      acceptStatus(result);
+      setDiffRevision((revision) => revision + 1);
+      setNotice(
+        method === "stageHunk" ? "Hunk staged in the index." : "Hunk unstaged.",
+      );
+    } catch (reason) {
+      reportError(errorMessage(reason));
+    } finally {
+      setWorking(false);
+    }
+  };
+
   const mutateFile = async (method: "stage" | "unstage", filePath: string) => {
     setWorking(true);
     setError("");
@@ -424,6 +623,177 @@ export function GitWorkspace({
       reportError(errorMessage(reason));
     } finally {
       setWorking(false);
+    }
+  };
+
+  const loadDirectory = useCallback(
+    async (dir: string) => {
+      setTreeLoading(true);
+      try {
+        const result = await gitRequest<{
+          entries: DirEntry[];
+        }>("listDirectory", { projectPath, dir });
+        setTreeCache((prev) => {
+          const next = new Map(prev);
+          next.set(dir, result.entries ?? []);
+          return next;
+        });
+        setError("");
+      } catch (reason) {
+        reportError(errorMessage(reason));
+      } finally {
+        setTreeLoading(false);
+      }
+    },
+    [projectPath, reportError],
+  );
+
+  const openPreview = useCallback(
+    async (filePath: string) => {
+      setPreviewPath(filePath);
+      setPreviewLoading(true);
+      setRecentPaths((prev) =>
+        [filePath, ...prev.filter((p) => p !== filePath)].slice(0, 10),
+      );
+      try {
+        const result = await gitRequest<FilePreview>("readFile", {
+          projectPath,
+          path: filePath,
+        });
+        setPreview(result);
+        setError("");
+      } catch (reason) {
+        setPreview(null);
+        reportError(errorMessage(reason));
+      } finally {
+        setPreviewLoading(false);
+      }
+    },
+    [projectPath, reportError],
+  );
+
+  // Load the repository root when the Files tab opens.
+  useEffect(() => {
+    if (tab !== "files") return;
+    if (!status?.isGitRepository) return;
+    if (!treeCache.has("")) void loadDirectory("");
+  }, [tab, status?.isGitRepository, treeCache, loadDirectory]);
+
+  const toggleDir = (dir: string) => {
+    setExpandedDirs((prev) => {
+      const next = new Set(prev);
+      if (next.has(dir)) next.delete(dir);
+      else {
+        next.add(dir);
+        if (!treeCache.has(dir)) void loadDirectory(dir);
+      }
+      return next;
+    });
+  };
+
+  const submitWebPreview = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const problem = previewUrlProblem(webUrl);
+    if (problem) {
+      reportError(problem);
+      return;
+    }
+    setError("");
+    // Explicit user approval: only this submitted URL is ever framed, and the
+    // frame is sandboxed without same-origin access or IPC.
+    setFramedUrl(webUrl.trim());
+    setFrameKey((key) => key + 1);
+  };
+
+  const refreshWorktrees = () => setWorktreeRevision((revision) => revision + 1);
+
+  const createWorktree = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!wtBranch.trim()) return;
+    setWorking(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await gitRequest<{ items: GitWorktree[] }>("createWorktree", {
+        projectPath,
+        branch: wtBranch.trim(),
+      });
+      setWorktrees(result.items ?? []);
+      setWtBranch("");
+      setShowWtDialog(false);
+      setNotice(`Worktree created for branch ${wtBranch.trim()} under .worktrees/. Select its folder via Open project to work in it.`);
+    } catch (reason) {
+      reportError(errorMessage(reason));
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const removeWorktree = async (worktreePath: string) => {
+    if (
+      !window.confirm(
+        `Remove the worktree at\n${worktreePath}\n\nOnly clean worktrees without unpushed commits can be removed. Dirty, untracked or unpushed worktrees are refused with the reason.`,
+      )
+    )
+      return;
+    setWorking(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await gitRequest<{ items: GitWorktree[] }>("removeWorktree", {
+        projectPath,
+        worktreePath,
+      });
+      setWorktrees(result.items ?? []);
+      setNotice("Worktree removed.");
+    } catch (reason) {
+      reportError(errorMessage(reason));
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const pruneWorktrees = async () => {
+    setWorking(true);
+    setError("");
+    try {
+      const result = await gitRequest<{ items: GitWorktree[] }>("pruneWorktrees", {
+        projectPath,
+      });
+      setWorktrees(result.items ?? []);
+      setNotice("Stale worktree metadata pruned. Real checkouts are never deleted by pruning.");
+    } catch (reason) {
+      reportError(errorMessage(reason));
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const copyWorktreePath = async (worktreePath: string) => {
+    try {
+      await navigator.clipboard.writeText(worktreePath);
+      setNotice("Worktree path copied. Open it via Open project to authorize it as an independent workspace.");
+    } catch {
+      reportError("Could not copy the worktree path.");
+    }
+  };
+
+  const openPrDetails = async (number: number | null) => {
+    if (number == null) return;
+    setSelectedPr(number);
+    setPrDetailsLoading(true);
+    setPrDetails(null);
+    try {
+      const result = await gitRequest<PullRequestDetails>("pullRequestDetails", {
+        projectPath,
+        number,
+      });
+      setPrDetails(result);
+      setError("");
+    } catch (reason) {
+      reportError(errorMessage(reason));
+    } finally {
+      setPrDetailsLoading(false);
     }
   };
 
@@ -486,10 +856,88 @@ export function GitWorkspace({
     count?: number;
   }[] = [
     { id: "changes", label: "Changes", icon: FileCode2, count: changesCount },
+    { id: "files", label: "Files", icon: Folder },
     { id: "history", label: "History", icon: History },
     { id: "worktrees", label: "Worktrees", icon: Workflow },
     { id: "pull-requests", label: "Pull requests", icon: GitPullRequest },
   ];
+  const dirtyPaths = useMemo(
+    () => new Set((status?.files ?? []).map((file) => file.path)),
+    [status?.files],
+  );
+  const renderTreeRows = (
+    dir: string,
+    depth: number,
+    rows: ReactNode[],
+    seen: Set<string>,
+  ): ReactNode[] => {
+    const entries = treeCache.get(dir) ?? [];
+    const needle = treeQuery.trim().toLowerCase();
+    for (const entry of entries) {
+      if (seen.has(entry.path)) continue;
+      seen.add(entry.path);
+      if (
+        needle &&
+        !entry.path.toLowerCase().includes(needle) &&
+        entry.kind !== "directory"
+      )
+        continue;
+      if (entry.kind === "directory") {
+        const open = expandedDirs.has(entry.path) || Boolean(needle);
+        rows.push(
+          <button
+            key={entry.path}
+            type="button"
+            className="git-workspace__tree-row"
+            style={{ paddingLeft: 6 + depth * 14 }}
+            aria-expanded={open}
+            onClick={() => toggleDir(entry.path)}
+            title={entry.path}
+          >
+            <Folder size={14} />
+            <span>{entry.name}/</span>
+            {entry.symlink && <small>link</small>}
+          </button>,
+        );
+        if (open) {
+          if (!treeCache.has(entry.path)) {
+            rows.push(
+              <p key={`${entry.path}:loading`} className="git-workspace__limit-note" style={{ paddingLeft: 20 + depth * 14 }}>
+                {treeLoading ? "Loading…" : "Not loaded"}
+              </p>,
+            );
+          } else {
+            renderTreeRows(entry.path, depth + 1, rows, seen);
+          }
+        }
+      } else {
+        rows.push(
+          <button
+            key={entry.path}
+            type="button"
+            className={
+              previewPath === entry.path
+                ? "git-workspace__tree-row is-selected"
+                : dirtyPaths.has(entry.path)
+                  ? "git-workspace__tree-row is-dirty"
+                  : "git-workspace__tree-row"
+            }
+            style={{ paddingLeft: 6 + depth * 14 }}
+            onClick={() => void openPreview(entry.path)}
+            title={`${entry.path}${dirtyPaths.has(entry.path) ? " · modified" : ""}`}
+          >
+            <FileCode2 size={14} />
+            <span>{entry.name}</span>
+            {dirtyPaths.has(entry.path) && (
+              <span className="git-workspace__file-badge" title="Modified in Git">M</span>
+            )}
+            {entry.symlink && <small>link</small>}
+          </button>,
+        );
+      }
+    }
+    return rows;
+  };
 
   return (
     <section className="git-workspace" aria-label="Git workspace">
@@ -671,101 +1119,68 @@ export function GitWorkspace({
                   </div>
                   <p className="git-workspace__attribution-help">
                     Baseline captured on open. Agent tags reflect observed Vibe
-                    writes; other new changes have unknown source.
+                    writes; other new changes have unknown source. Review flow:
+                    inspect hunks → stage → commit → create a PR.
                   </p>
+                  <div className="git-workspace__file-tools" role="search">
+                    <input
+                      type="search"
+                      placeholder="Filter changed files…"
+                      aria-label="Filter changed files"
+                      value={fileQuery}
+                      onChange={(event) => setFileQuery(event.target.value)}
+                    />
+                    <div
+                      className="git-workspace__filter-chips"
+                      role="group"
+                      aria-label="Change filter"
+                    >
+                      {(
+                        [
+                          ["all", `All ${changesCount}`],
+                          ["staged", `Staged ${stagedCount}`],
+                          ["unstaged", "Unstaged"],
+                          ["conflicted", `Conflicts ${conflictedCount}`],
+                        ] as const
+                      ).map(([id, label]) => (
+                        <button
+                          key={id}
+                          type="button"
+                          aria-pressed={fileFilter === id}
+                          className={fileFilter === id ? "is-active" : ""}
+                          onClick={() => setFileFilter(id)}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                   {status.filesTruncated && (
                     <p className="git-workspace__limit-note">
                       Showing the first 500 changed paths.
                     </p>
                   )}
                   <div className="git-workspace__file-list" role="list">
-                    {status.files.map((file) => {
-                      const selected = selectedPath === file.path;
-                      const label = fileStateLabel(
-                        file,
-                        baselinePaths,
-                        agentPathSet,
-                      );
-                      return (
-                        <article
-                          key={file.path}
-                          role="listitem"
-                          className={
-                            selected
-                              ? "git-workspace__file is-selected"
-                              : "git-workspace__file"
-                          }
-                        >
-                          <button
-                            type="button"
-                            className="git-workspace__file-select"
-                            aria-pressed={selected}
-                            onClick={() => {
-                              setSelectedPath(file.path);
-                              setShowStagedDiff(false);
-                            }}
-                            title={file.path}
-                          >
-                            <FileCode2 size={15} />
-                            <span className="git-workspace__file-name">
-                              {file.path}
-                            </span>
-                            <span
-                              className={
-                                file.conflicted
-                                  ? "git-workspace__file-badge is-conflict"
-                                  : "git-workspace__file-badge"
-                              }
-                            >
-                              {file.untracked
-                                ? "U"
-                                : `${file.indexStatus}${file.worktreeStatus}`}
-                            </span>
-                          </button>
-                          <div className="git-workspace__file-meta">
-                            <span
-                              className={`git-workspace__origin git-workspace__origin--${label === "Pre-existing" ? "old" : label === "Agent touched" ? "agent" : "unknown"}`}
-                            >
-                              {label}
-                            </span>
-                            <span className="git-workspace__file-actions">
-                              {(file.unstaged || file.untracked) && (
-                                <button
-                                  type="button"
-                                  className="git-workspace__mini-button"
-                                  onClick={() =>
-                                    void mutateFile("stage", file.path)
-                                  }
-                                  disabled={working}
-                                  title={`Stage ${file.path}`}
-                                  aria-label={`Stage ${file.path}`}
-                                >
-                                  <Plus size={13} /> Stage
-                                </button>
-                              )}
-                              {file.staged && (
-                                <button
-                                  type="button"
-                                  className="git-workspace__mini-button"
-                                  onClick={() =>
-                                    void mutateFile("unstage", file.path)
-                                  }
-                                  disabled={working}
-                                  title={`Unstage ${file.path}`}
-                                  aria-label={`Unstage ${file.path}`}
-                                >
-                                  <Minus size={13} /> Unstage
-                                </button>
-                              )}
-                            </span>
-                          </div>
-                        </article>
-                      );
-                    })}
-                    {!status.files.length && !loadingStatus && (
+                    {fileFilter !== "unstaged" && stagedFiles.length > 0 && (
+                      <p className="git-workspace__group-heading" role="presentation">
+                        Staged · {stagedFiles.length} ready to commit
+                      </p>
+                    )}
+                    {fileFilter !== "unstaged" && stagedFiles.map(renderFileRow)}
+                    {fileFilter !== "staged" && workingFiles.length > 0 && (
+                      <p className="git-workspace__group-heading" role="presentation">
+                        Working tree · {workingFiles.length} not yet staged
+                      </p>
+                    )}
+                    {fileFilter !== "staged" && workingFiles.map(renderFileRow)}
+                    {!visibleFiles.length && !loadingStatus && (
                       <div className="git-workspace__list-empty">
                         <Check size={18} />
-                        <span>No changed files</span>
+                        <span>
+                          {status.files.length
+                            ? "No files match this filter"
+                            : "No changed files"}
+                        </span>
                       </div>
                     )}
                   </div>
@@ -864,31 +1279,40 @@ export function GitWorkspace({
                         Loading diff…
                       </div>
                     ) : diff?.diffText ? (
-                      <div className="git-workspace__diff-lines">
-                        {diff.diffText
-                          .replace(/\n$/, "")
-                          .split("\n")
-                          .map((line, index) => (
-                            <div
-                              className={`git-workspace__diff-line git-workspace__diff-line--${diffKind(line)}`}
-                              key={`${index}-${line.slice(0, 40)}`}
-                            >
-                              <span
-                                aria-hidden="true"
-                                className="git-workspace__diff-marker"
-                              >
-                                {line.startsWith("+")
-                                  ? "+"
-                                  : line.startsWith("-")
-                                    ? "−"
-                                    : line.startsWith("@@")
-                                      ? "·"
-                                      : ""}
-                              </span>
-                              <code>{line || " "}</code>
-                            </div>
-                          ))}
-                      </div>
+                      <DiffViewer
+                        key={`${selectedPath}-${showStagedDiff ? "staged" : "work"}-${diffRevision}`}
+                        diffText={diff.diffText}
+                        filePath={selectedPath ?? diff.path}
+                        staged={showStagedDiff}
+                        working={working}
+                        truncated={diff.truncated}
+                        onStageHunk={
+                          showStagedDiff
+                            ? undefined
+                            : selectedPath
+                              ? (header, lines) =>
+                                  void mutateHunk(
+                                    "stageHunk",
+                                    selectedPath,
+                                    header,
+                                    lines,
+                                  )
+                              : undefined
+                        }
+                        onUnstageHunk={
+                          showStagedDiff
+                            ? selectedPath
+                              ? (header, lines) =>
+                                  void mutateHunk(
+                                    "unstageHunk",
+                                    selectedPath,
+                                    header,
+                                    lines,
+                                  )
+                              : undefined
+                            : undefined
+                        }
+                      />
                     ) : selectedFile ? (
                       <div className="git-workspace__diff-empty">
                         <Minus size={18} />
@@ -915,6 +1339,203 @@ export function GitWorkspace({
                   )}
                 </section>
               </div>
+            )}
+
+            {tab === "files" && (
+              <section className="git-workspace__list-view" aria-label="File explorer">
+                <div className="git-workspace__pane-heading">
+                  <div>
+                    <span className="git-workspace__eyebrow">REPOSITORY</span>
+                    <h2>Files</h2>
+                  </div>
+                  <button
+                    type="button"
+                    className="git-workspace__icon-button"
+                    onClick={() => void loadDirectory("")}
+                    disabled={treeLoading}
+                    aria-label="Reload file tree"
+                  >
+                    <RefreshCw size={15} />
+                  </button>
+                </div>
+                <p className="git-workspace__view-note">
+                  Read-only inspector: previews never grant local files any
+                  app privileges. Modified files carry their Git state.
+                </p>
+                <div className="git-workspace__explorer">
+                  <aside className="git-workspace__tree" aria-label="Folder tree">
+                    <div className="git-workspace__file-tools" role="search">
+                      <input
+                        type="search"
+                        placeholder="Find a file…"
+                        aria-label="Find a file"
+                        value={treeQuery}
+                        onChange={(event) => setTreeQuery(event.target.value)}
+                      />
+                    </div>
+                    {recentPaths.length > 0 && (
+                      <>
+                        <p className="git-workspace__group-heading">Recent</p>
+                        {recentPaths.map((recent) => (
+                          <button
+                            key={`recent:${recent}`}
+                            type="button"
+                            className={
+                              previewPath === recent
+                                ? "git-workspace__tree-row is-selected"
+                                : "git-workspace__tree-row"
+                            }
+                            onClick={() => void openPreview(recent)}
+                            title={recent}
+                          >
+                            <History size={13} /> <span>{recent}</span>
+                          </button>
+                        ))}
+                      </>
+                    )}
+                    {(status?.files ?? []).length > 0 && (
+                      <>
+                        <p className="git-workspace__group-heading">
+                          Modified · {(status?.files ?? []).length}
+                        </p>
+                        {(status?.files ?? []).slice(0, 20).map((file) => (
+                          <button
+                            key={`modified:${file.path}`}
+                            type="button"
+                            className={
+                              previewPath === file.path
+                                ? "git-workspace__tree-row is-selected"
+                                : "git-workspace__tree-row is-dirty"
+                            }
+                            onClick={() => void openPreview(file.path)}
+                            title={file.path}
+                          >
+                            <FileCode2 size={13} /> <span>{file.path}</span>
+                          </button>
+                        ))}
+                      </>
+                    )}
+                    <p className="git-workspace__group-heading">Tree</p>
+                    {renderTreeRows("", 0, [], new Set())}
+                    {treeLoading && (
+                      <div className="git-workspace__loading">
+                        <LoaderCircle size={15} className="git-workspace__spin" /> Loading…
+                      </div>
+                    )}
+                  </aside>
+                  <div className="git-workspace__preview" aria-label="File preview" aria-busy={previewLoading}>
+                    {previewLoading ? (
+                      <div className="git-workspace__loading">
+                        <LoaderCircle size={17} className="git-workspace__spin" /> Reading file…
+                      </div>
+                    ) : !preview ? (
+                      <div className="git-workspace__diff-empty">
+                        <Folder size={18} />
+                        <span>Select a file to preview it read-only.</span>
+                      </div>
+                    ) : preview.kind === "image" && preview.base64 ? (
+                      <>
+                        <p className="git-workspace__group-heading">{preview.path}</p>
+                        <img src={`data:${preview.mime ?? "image/png"};base64,${preview.base64}`} alt={preview.path} />
+                      </>
+                    ) : preview.kind === "binary" ? (
+                      <div className="git-workspace__diff-empty">
+                        <Minus size={18} />
+                        <span>Binary file — no text preview ({(preview.size ?? 0).toLocaleString()} bytes).</span>
+                      </div>
+                    ) : preview.kind === "too-large" ? (
+                      <div className="git-workspace__diff-empty">
+                        <Minus size={18} />
+                        <span>
+                          File too large to preview ({(preview.size ?? 0).toLocaleString()} bytes, cap {(preview.maxBytes ?? 0).toLocaleString()}).
+                        </span>
+                      </div>
+                    ) : preview.kind === "markdown" && preview.text != null ? (
+                      <>
+                        <p className="git-workspace__group-heading">{preview.path}</p>
+                        <ReactMarkdown>{preview.text}</ReactMarkdown>
+                      </>
+                    ) : (
+                      <>
+                        <p className="git-workspace__group-heading">
+                          {preview.path}
+                          {preview.kind === "json" ? " · JSON" : ""}
+                          {preview.truncated ? ` · first ${(preview.maxBytes ?? 0).toLocaleString()} bytes` : ""}
+                        </p>
+                        <pre>
+                          <code>{preview.text}</code>
+                        </pre>
+                      </>
+                    )}
+                  </div>
+                </div>
+                <div className="git-workspace__web-preview">
+                  <div className="git-workspace__pane-heading">
+                    <div>
+                      <span className="git-workspace__eyebrow">LOCAL WEB</span>
+                      <h2>App preview</h2>
+                    </div>
+                    <Globe size={15} />
+                  </div>
+                  <p className="git-workspace__view-note">
+                    Optional loopback preview (for example a dev server you
+                    started yourself). Only an explicitly submitted localhost
+                    URL is framed, isolated without app privileges, and nothing
+                    is ever launched automatically.
+                  </p>
+                  <form
+                    className="git-workspace__wt-create-row"
+                    onSubmit={submitWebPreview}
+                  >
+                    <input
+                      type="url"
+                      placeholder="http://localhost:3000/"
+                      aria-label="Local preview URL"
+                      value={webUrl}
+                      onChange={(event) => setWebUrl(event.target.value)}
+                    />
+                    <button
+                      type="submit"
+                      className="git-workspace__button git-workspace__button--primary"
+                    >
+                      Preview
+                    </button>
+                    {framedUrl && (
+                      <>
+                        <button
+                          type="button"
+                          className="git-workspace__button git-workspace__button--quiet"
+                          onClick={() => setFrameKey((key) => key + 1)}
+                        >
+                          <RefreshCw size={13} /> Reload
+                        </button>
+                        <button
+                          type="button"
+                          className="git-workspace__button git-workspace__button--quiet"
+                          onClick={() => void openExternal(framedUrl)}
+                        >
+                          Open in browser <ExternalLink size={13} />
+                        </button>
+                      </>
+                    )}
+                  </form>
+                  {!framedUrl && !isAllowedPreviewUrl(webUrl) && webUrl.trim() && (
+                    <p className="git-workspace__limit-note" role="alert">
+                      {previewUrlProblem(webUrl)}
+                    </p>
+                  )}
+                  {framedUrl && (
+                    <iframe
+                      key={frameKey}
+                      title={`Local preview of ${framedUrl}`}
+                      src={framedUrl}
+                      sandbox="allow-scripts"
+                      referrerPolicy="no-referrer"
+                      className="git-workspace__frame"
+                    />
+                  )}
+                </div>
+              </section>
             )}
 
             {tab === "history" && (
@@ -985,22 +1606,84 @@ export function GitWorkspace({
                     <span className="git-workspace__eyebrow">CHECKOUTS</span>
                     <h2>Worktrees</h2>
                   </div>
-                  <button
-                    type="button"
-                    className="git-workspace__icon-button"
-                    onClick={() =>
-                      setWorktreeRevision((revision) => revision + 1)
-                    }
-                    disabled={loadingTab}
-                    aria-label="Refresh worktrees"
-                  >
-                    <RefreshCw size={15} />
-                  </button>
+                  <div className="git-workspace__heading-actions">
+                    <button
+                      type="button"
+                      className="git-workspace__icon-button"
+                      onClick={refreshWorktrees}
+                      disabled={loadingTab}
+                      aria-label="Refresh worktrees"
+                    >
+                      <RefreshCw size={15} />
+                    </button>
+                    <button
+                      type="button"
+                      className="git-workspace__button git-workspace__button--quiet"
+                      onClick={() => void pruneWorktrees()}
+                      disabled={working || loadingTab}
+                      title="Remove stale worktree metadata only; never deletes real checkouts"
+                    >
+                      Prune stale
+                    </button>
+                    <button
+                      type="button"
+                      className="git-workspace__button git-workspace__button--primary"
+                      onClick={() => {
+                        setWtBranch("");
+                        setShowWtDialog(true);
+                      }}
+                      disabled={working}
+                    >
+                      <Plus size={14} /> New worktree
+                    </button>
+                  </div>
                 </div>
                 <p className="git-workspace__view-note">
-                  Worktrees are listed read-only here. No checkout or cleanup
-                  action is performed.
+                  One agent per worktree: each checkout shows its branch, dirty
+                  state and unpushed commits. Removal is safe-only — dirty,
+                  untracked or unpushed worktrees are refused with the reason,
+                  never force-deleted. Open a worktree via Open project to
+                  authorize it as an independent workspace.
                 </p>
+                {showWtDialog && (
+                  <form
+                    className="git-workspace__wt-create"
+                    onSubmit={(event) => void createWorktree(event)}
+                  >
+                    <label htmlFor="git-wt-branch">New branch worktree</label>
+                    <div className="git-workspace__wt-create-row">
+                      <input
+                        id="git-wt-branch"
+                        value={wtBranch}
+                        onChange={(event) => setWtBranch(event.target.value)}
+                        maxLength={128}
+                        placeholder="feature/my-work"
+                        autoFocus
+                        required
+                        disabled={working}
+                      />
+                      <button
+                        type="submit"
+                        className="git-workspace__button git-workspace__button--primary"
+                        disabled={working || !wtBranch.trim()}
+                      >
+                        Create
+                      </button>
+                      <button
+                        type="button"
+                        className="git-workspace__button git-workspace__button--quiet"
+                        onClick={() => setShowWtDialog(false)}
+                        disabled={working}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                    <small>
+                      Created under <code>.worktrees/</code> from HEAD without
+                      moving your session or overwriting branches.
+                    </small>
+                  </form>
+                )}
                 {loadingTab && (
                   <div className="git-workspace__loading">
                     <LoaderCircle size={17} className="git-workspace__spin" />{" "}
@@ -1013,34 +1696,83 @@ export function GitWorkspace({
                   </div>
                 )}
                 <div className="git-workspace__worktree-list">
-                  {worktrees?.map((tree) => (
-                    <article
-                      className="git-workspace__worktree-item"
-                      key={`${tree.path}-${tree.head}`}
-                    >
-                      <div className="git-workspace__worktree-icon">
-                        <Workflow size={16} />
-                      </div>
-                      <div className="git-workspace__worktree-main">
-                        <strong>
-                          {tree.branch ??
-                            (tree.detached
-                              ? "Detached HEAD"
-                              : "Bare repository")}
-                        </strong>
-                        <span title={tree.path}>{tree.path}</span>
-                      </div>
-                      <code title={tree.head}>{shortHash(tree.head)}</code>
-                      {tree.locked && (
-                        <span className="git-workspace__tag">Locked</span>
-                      )}
-                      {tree.prunable && (
-                        <span className="git-workspace__tag git-workspace__tag--warn">
-                          Prunable
+                  {worktrees?.map((tree) => {
+                    const isCurrent =
+                      status?.root != null &&
+                      tree.path.replace(/\\/g, "/").toLowerCase() ===
+                        status.root.replace(/\\/g, "/").toLowerCase();
+                    return (
+                      <article
+                        className="git-workspace__worktree-item"
+                        key={`${tree.path}-${tree.head}`}
+                      >
+                        <div className="git-workspace__worktree-icon">
+                          <Workflow size={16} />
+                        </div>
+                        <div className="git-workspace__worktree-main">
+                          <strong>
+                            {tree.branch ??
+                              (tree.detached
+                                ? "Detached HEAD"
+                                : "Bare repository")}
+                          </strong>
+                          <span title={tree.path}>{tree.path}</span>
+                          <span className="git-workspace__worktree-state">
+                            {isCurrent && (
+                              <span className="git-workspace__tag">Current</span>
+                            )}
+                            {tree.dirty == null ? (
+                              <span className="git-workspace__tag">Unknown state</span>
+                            ) : tree.dirty ? (
+                              <span className="git-workspace__tag git-workspace__tag--warn">
+                                Dirty{(tree.untrackedCount ?? 0) > 0 ? ` · ${tree.untrackedCount} untracked` : ""}
+                              </span>
+                            ) : (
+                              <span className="git-workspace__tag git-workspace__tag--ok">Clean</span>
+                            )}
+                            {(tree.ahead ?? 0) > 0 && (
+                              <span className="git-workspace__tag git-workspace__tag--warn">
+                                ↑ {tree.ahead} unpushed
+                              </span>
+                            )}
+                            {(tree.behind ?? 0) > 0 && (
+                              <span className="git-workspace__tag">↓ {tree.behind}</span>
+                            )}
+                          </span>
+                        </div>
+                        <code title={tree.head}>{shortHash(tree.head)}</code>
+                        {tree.locked && (
+                          <span className="git-workspace__tag">Locked</span>
+                        )}
+                        {tree.prunable && (
+                          <span className="git-workspace__tag git-workspace__tag--warn">
+                            Prunable
+                          </span>
+                        )}
+                        <span className="git-workspace__file-actions">
+                          <button
+                            type="button"
+                            className="git-workspace__mini-button"
+                            onClick={() => void copyWorktreePath(tree.path)}
+                            title="Copy the worktree path to open it via Open project"
+                          >
+                            Copy path
+                          </button>
+                          {!isCurrent && !tree.bare && (
+                            <button
+                              type="button"
+                              className="git-workspace__mini-button"
+                              onClick={() => void removeWorktree(tree.path)}
+                              disabled={working}
+                              title="Remove this worktree (safe-only: refused when dirty, untracked or unpushed)"
+                            >
+                              Remove
+                            </button>
+                          )}
                         </span>
-                      )}
-                    </article>
-                  ))}
+                      </article>
+                    );
+                  })}
                 </div>
               </section>
             )}
@@ -1139,29 +1871,42 @@ export function GitWorkspace({
                 <div className="git-workspace__pr-list">
                   {pullRequests?.items.map((item) => (
                     <article
-                      className="git-workspace__pr-item"
+                      className={
+                        selectedPr === item.number
+                          ? "git-workspace__pr-item is-selected"
+                          : "git-workspace__pr-item"
+                      }
                       key={item.number ?? item.url}
                     >
-                      <div className="git-workspace__pr-icon">
-                        <GitPullRequest size={16} />
-                      </div>
-                      <div className="git-workspace__pr-main">
-                        <strong>{item.title}</strong>
-                        <span>
-                          #{item.number ?? "?"} · {item.headRefName} →{" "}
-                          {item.baseRefName}
-                          {item.isDraft ? " · Draft" : ""}
+                      <button
+                        type="button"
+                        className="git-workspace__pr-select"
+                        onClick={() => void openPrDetails(item.number)}
+                        disabled={!item.number || prDetailsLoading}
+                        title="Show files changed and check status"
+                        aria-label={`Review pull request ${item.number}: ${item.title}`}
+                      >
+                        <span className="git-workspace__pr-icon">
+                          <GitPullRequest size={16} />
                         </span>
-                      </div>
-                      <span className="git-workspace__pr-state">
-                        {item.reviewDecision || item.state}
-                      </span>
+                        <span className="git-workspace__pr-main">
+                          <strong>{item.title}</strong>
+                          <span>
+                            #{item.number ?? "?"} · {item.headRefName} →{" "}
+                            {item.baseRefName}
+                            {item.isDraft ? " · Draft" : ""}
+                          </span>
+                        </span>
+                        <span className="git-workspace__pr-state">
+                          {item.reviewDecision || item.state}
+                        </span>
+                      </button>
                       {item.url && (
                         <button
                           type="button"
                           className="git-workspace__icon-button"
                           onClick={() => void openExternal(item.url!)}
-                          aria-label={`Open pull request ${item.number}`}
+                          aria-label={`Open pull request ${item.number} in browser`}
                         >
                           <ArrowUpRight size={15} />
                         </button>
@@ -1169,6 +1914,90 @@ export function GitWorkspace({
                     </article>
                   ))}
                 </div>
+                {(prDetailsLoading || prDetails) && (
+                  <div className="git-workspace__pr-details" aria-live="polite">
+                    {prDetailsLoading ? (
+                      <div className="git-workspace__loading">
+                        <LoaderCircle size={15} className="git-workspace__spin" /> Reading PR details…
+                      </div>
+                    ) : prDetails ? (
+                      <>
+                        <div className="git-workspace__pane-heading">
+                          <div>
+                            <span className="git-workspace__eyebrow">
+                              REVIEW · #{prDetails.number} · {prDetails.commits} COMMITS
+                            </span>
+                            <h2>{prDetails.title}</h2>
+                          </div>
+                          <button
+                            type="button"
+                            className="git-workspace__icon-button"
+                            onClick={() => {
+                              setSelectedPr(null);
+                              setPrDetails(null);
+                            }}
+                            aria-label="Close pull request details"
+                          >
+                            <X size={15} />
+                          </button>
+                        </div>
+                        {prDetails.body && (
+                          <div className="git-workspace__pr-body">
+                            <ReactMarkdown>{prDetails.body}</ReactMarkdown>
+                          </div>
+                        )}
+                        <p className="git-workspace__group-heading">
+                          Checks · {prDetails.checks.length}
+                        </p>
+                        {prDetails.checks.length === 0 ? (
+                          <p className="git-workspace__view-note">No check runs reported.</p>
+                        ) : (
+                          prDetails.checks.map((check) => (
+                            <p key={check.name} className="git-workspace__check-row">
+                              <span
+                                className={
+                                  check.conclusion === "SUCCESS"
+                                    ? "git-workspace__tag git-workspace__tag--ok"
+                                    : check.conclusion != null && check.conclusion !== "SUCCESS"
+                                      ? "git-workspace__tag git-workspace__tag--warn"
+                                      : "git-workspace__tag"
+                                }
+                              >
+                                {check.conclusion ?? check.status}
+                              </span>{" "}
+                              {check.name}
+                            </p>
+                          ))
+                        )}
+                        <p className="git-workspace__group-heading">
+                          Files changed · {prDetails.files.length}
+                          {prDetails.filesTruncated ? " (truncated)" : ""}
+                        </p>
+                        {prDetails.files.map((file) => (
+                          <p key={file.path} className="git-workspace__check-row" title={file.path}>
+                            <FileCode2 size={13} /> {file.path}{" "}
+                            <small>
+                              +{file.additions} −{file.deletions}
+                            </small>
+                          </p>
+                        ))}
+                        {prDetails.url && (
+                          <button
+                            type="button"
+                            className="git-workspace__button git-workspace__button--quiet"
+                            onClick={() => void openExternal(prDetails.url!)}
+                          >
+                            Open pull request #{prDetails.number} in browser <ExternalLink size={13} />
+                          </button>
+                        )}
+                        <p className="git-workspace__view-note">
+                          Review approvals happen on GitHub. Approving or
+                          merging from here is intentionally unsupported.
+                        </p>
+                      </>
+                    ) : null}
+                  </div>
+                )}
                 <p className="git-workspace__view-note">
                   Opening a PR is a separate action. Creating one requires an
                   authenticated <code>gh</code> CLI and a branch already

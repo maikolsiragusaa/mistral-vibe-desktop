@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { lstat, realpath, stat } from "node:fs/promises";
+import { readdir, readFile as readFsFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -10,8 +10,58 @@ const MAX_PATHS_PER_MUTATION = 200;
 const MAX_PATH_LENGTH = 4096;
 const MAX_LOG_LIMIT = 100;
 const MAX_WORKTREES = 100;
+const MAX_WORKTREE_DETAILS = 25;
+const MAX_DIRECTORY_ENTRIES = 500;
+const MAX_PREVIEW_BYTES = 512 * 1024;
+const MAX_IMAGE_PREVIEW_BYTES = 2 * 1024 * 1024;
+const PREVIEWABLE_IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".ico", ".bmp"]);
 const MAX_PULL_REQUESTS = 30;
+const MAX_HUNK_LINES = 200;
+const MAX_HUNK_BYTES = 256 * 1024;
 const GITHUB_OWNER_OR_REPO = /^[A-Za-z0-9_.-]+$/;
+const HUNK_HEADER = /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@[^\0\n]{0,512}$/;
+
+function parseUnifiedHunks(diffText) {
+  const hunks = [];
+  if (typeof diffText !== "string" || !diffText) return hunks;
+  const lines = diffText.split("\n");
+  // Drop the trailing artifact of the final newline, not a hunk line.
+  if (lines.length && lines[lines.length - 1] === "") lines.pop();
+  let current = null;
+  for (const line of lines) {
+    if (line.startsWith("@@")) {
+      current = { header: line.replace(/\r$/, ""), lines: [] };
+      hunks.push(current);
+    } else if (current) {
+      current.lines.push(line.replace(/\r$/, ""));
+    }
+  }
+  return hunks.filter((h) => HUNK_HEADER.test(h.header));
+}
+
+function validateHunkInput(header, lines) {
+  if (typeof header !== "string" || !HUNK_HEADER.test(header))
+    throw new TypeError("Hunk header is invalid");
+  if (!Array.isArray(lines) || lines.length < 1 || lines.length > MAX_HUNK_LINES)
+    throw new TypeError(`Hunk must contain between 1 and ${MAX_HUNK_LINES} lines`);
+  let bytes = Buffer.byteLength(header, "utf8");
+  for (const line of lines) {
+    if (typeof line !== "string" || line.length > 8192 || line.includes("\0"))
+      throw new TypeError("Hunk content is invalid");
+    // An empty diff line is a blank context line; git emits it bare.
+    if (line === "") {
+      bytes += 1;
+      continue;
+    }
+    const marker = line[0];
+    if (marker !== " " && marker !== "+" && marker !== "-" && marker !== "\\")
+      throw new TypeError("Hunk content is invalid");
+    if (line[0] === "\\" && !line.startsWith("\\ No newline"))
+      throw new TypeError("Hunk content is invalid");
+    bytes += Buffer.byteLength(line, "utf8") + 1;
+  }
+  if (bytes > MAX_HUNK_BYTES) throw new TypeError("Hunk is too large");
+}
 
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -55,7 +105,13 @@ function normalizeRelativePath(input) {
     throw new TypeError("A repository-relative file path is required");
   }
   const portable = input.replaceAll("\\", "/");
-  if (portable.startsWith("/") || /^[A-Za-z]:/.test(portable)) {
+  // Absolute, drive-anchored and UNC paths are never repository-relative.
+  // UNC (//server/share or \\server\share) arrives here as a leading //.
+  if (
+    portable.startsWith("/") ||
+    /^[A-Za-z]:/.test(portable) ||
+    portable.startsWith("//")
+  ) {
     throw new TypeError(
       "File path must be relative to the selected repository",
     );
@@ -65,11 +121,24 @@ function normalizeRelativePath(input) {
     throw new TypeError("File path cannot leave the selected repository");
   }
   const normalized = pieces.filter((piece) => piece && piece !== ".");
-  if (
-    normalized.length === 0 ||
-    normalized.some((piece) => piece.toLowerCase() === ".git")
-  ) {
+  if (normalized.length === 0) {
     throw new TypeError("File path is not available to the Git workspace");
+  }
+  for (const piece of normalized) {
+    // NTFS alternate data streams and device syntax never reach Git.
+    if (piece.includes(":")) {
+      throw new TypeError("File path is not available to the Git workspace");
+    }
+    // Windows ignores trailing dots/spaces: ".git.", ".git " and "dir "
+    // resolve to ".git" and "dir". Strip them before the guard so the
+    // bypass cannot smuggle .git access or confuse canonicalization.
+    const stripped = piece.replace(/[. ]+$/, "");
+    if (!stripped) {
+      throw new TypeError("File path is not available to the Git workspace");
+    }
+    if (stripped.toLowerCase() === ".git") {
+      throw new TypeError("File path is not available to the Git workspace");
+    }
   }
   return normalized.join("/");
 }
@@ -420,6 +489,9 @@ export class GitWorkspaceService {
   async stage({ projectPath, paths } = {}) {
     const root = await this.#requireRepository(projectPath);
     const safePaths = await this.#validateMutationPaths(root, paths);
+    // Narrow the TOCTOU window: re-verify repo identity immediately before
+    // the mutation; the returned status verifies the actual index effect.
+    await this.#verifyRepositoryIdentity(root);
     await this.#runGit(
       root,
       ["--literal-pathspecs", "add", "--", ...safePaths],
@@ -431,6 +503,7 @@ export class GitWorkspaceService {
   async unstage({ projectPath, paths } = {}) {
     const root = await this.#requireRepository(projectPath);
     const safePaths = await this.#validateMutationPaths(root, paths);
+    await this.#verifyRepositoryIdentity(root);
     let hasHead = true;
     try {
       await this.#runGit(
@@ -466,8 +539,102 @@ export class GitWorkspaceService {
     return this.status({ projectPath });
   }
 
+  async stageHunk({ projectPath, path: filePath, header, lines } = {}) {
+    return this.#applyHunk({ projectPath, filePath, header, lines, reverse: false });
+  }
+
+  async unstageHunk({ projectPath, path: filePath, header, lines } = {}) {
+    return this.#applyHunk({ projectPath, filePath, header, lines, reverse: true });
+  }
+
+  async #applyHunk({ projectPath, filePath, header, lines, reverse }) {
+    const relativePath = normalizeRelativePath(filePath);
+    validateHunkInput(header, lines);
+    const root = await this.#requireRepository(projectPath);
+    await this.#assertSafeFilePath(root, relativePath);
+    await this.#verifyRepositoryIdentity(root);
+    const staged = Boolean(reverse);
+    const status = await this.#statusAtRoot(root);
+    const changed = status.files.find((file) => file.path === relativePath);
+    if (!changed) throw operationError("This file has no changes to apply");
+    if (changed.untracked)
+      throw operationError("Untracked files are staged whole, not by hunk");
+    if (changed.conflicted)
+      throw operationError("Resolve conflicts before staging individual hunks");
+    // Regenerate the authoritative diff at execution time. The requested hunk
+    // must match a current hunk exactly or the diff is stale (concurrent
+    // edits, index changed, CRLF normalization) and the apply is refused.
+    const fresh = await this.#rawDiffAtRoot(root, relativePath, staged);
+    if (fresh.truncated)
+      throw operationError("This diff is too large to stage by hunk; stage the whole file");
+    if (/^Binary files .* differ/m.test(fresh.diffText))
+      throw operationError("Binary files are staged whole, not by hunk");
+    const current = parseUnifiedHunks(fresh.diffText);
+    const wanted = lines.join("\n");
+    const match = current.some(
+      (h) => h.header === header && h.lines.join("\n") === wanted,
+    );
+    if (!match)
+      throw operationError(
+        "This hunk no longer matches the repository. Refresh the diff and try again",
+        "STALE_HUNK",
+      );
+    const patch =
+      `diff --git a/${relativePath} b/${relativePath}\n` +
+      `--- a/${relativePath}\n` +
+      `+++ b/${relativePath}\n` +
+      `${header}\n` +
+      lines.join("\n") +
+      "\n";
+    // Structured args, shell:false (execFile), patch via stdin — no shell
+    // interpolation of user content. git apply is atomic: on failure the
+    // index is left unchanged.
+    await this.#runGit(
+      root,
+      ["apply", "--cached", ...(reverse ? ["--reverse"] : []), "--unidiff-zero", "-"],
+      reverse ? "Git unstage hunk" : "Git stage hunk",
+      { input: patch, maxBuffer: MAX_COMMAND_OUTPUT_BYTES },
+    );
+    // Success of the call is not enough: return the verified index state.
+    return this.status({ projectPath });
+  }
+
+  async #rawDiffAtRoot(root, relativePath, staged) {
+    const args = [
+      "--no-pager",
+      "--literal-pathspecs",
+      "diff",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--no-color",
+      "--unified=3",
+      ...(staged ? ["--cached"] : []),
+      "--",
+      relativePath,
+    ];
+    let diffText = "";
+    let truncated = false;
+    try {
+      const result = await this.#runGit(root, args, "Git diff", {
+        maxBuffer: MAX_DIFF_BYTES + 1024,
+        readOnly: true,
+      });
+      diffText = result.stdout;
+    } catch (error) {
+      if (error.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") throw error;
+      diffText = safeUtf8Prefix(error.stdout ?? "", MAX_DIFF_BYTES);
+      truncated = true;
+    }
+    if (Buffer.byteLength(diffText, "utf8") > MAX_DIFF_BYTES) {
+      diffText = safeUtf8Prefix(diffText, MAX_DIFF_BYTES);
+      truncated = true;
+    }
+    return { diffText, truncated };
+  }
+
   async commit({ projectPath, message } = {}) {
     const root = await this.#requireRepository(projectPath);
+    await this.#verifyRepositoryIdentity(root);
     if (
       typeof message !== "string" ||
       message.trim().length === 0 ||
@@ -507,9 +674,317 @@ export class GitWorkspaceService {
       "Git worktree list",
       { maxBuffer: 1024 * 1024, readOnly: true },
     );
+    const listed = parseWorktreeList(result.stdout, MAX_WORKTREES);
+    // Enrich with read-only per-worktree state (dirty, ahead/behind) so the
+    // UI can show ownership-relevant status without a second round trip.
+    // Details are capped: beyond MAX_WORKTREE_DETAILS the items stay listed
+    // with unknown state rather than blocking the view on 100 spawns.
+    const items = [];
+    for (let index = 0; index < listed.items.length; index += 1) {
+      const item = listed.items[index];
+      if (index >= MAX_WORKTREE_DETAILS) {
+        items.push({ ...item, dirty: null, ahead: null, behind: null });
+        continue;
+      }
+      try {
+        items.push({ ...item, ...(await this.#worktreeDetails(item.path)) });
+      } catch {
+        items.push({ ...item, dirty: null, ahead: null, behind: null });
+      }
+    }
+    return { isGitRepository: true, items, truncated: listed.truncated };
+  }
+
+  async #worktreeDetails(worktreePath) {
+    const status = await this.#runGit(
+      worktreePath,
+      ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"],
+      "Git worktree status",
+      { maxBuffer: 512 * 1024, readOnly: true },
+    );
+    const parsed = parsePorcelainV2(status.stdout);
+    const untracked = parsed.files.filter((f) => f.untracked).map((f) => f.path);
+    return {
+      dirty: parsed.files.length > 0,
+      untrackedCount: untracked.length,
+      untrackedSample: untracked.slice(0, 10),
+      ahead: parsed.ahead,
+      behind: parsed.behind,
+      upstream: parsed.upstream,
+      head: parsed.head,
+    };
+  }
+
+  async #findListedWorktree(root, worktreePath) {
+    if (
+      typeof worktreePath !== "string" ||
+      worktreePath.length < 1 ||
+      worktreePath.length > MAX_PATH_LENGTH ||
+      !path.isAbsolute(worktreePath)
+    )
+      throw new TypeError("A worktree path is required");
+    const result = await this.#runGit(
+      root,
+      ["worktree", "list", "--porcelain", "-z"],
+      "Git worktree list",
+      { maxBuffer: 1024 * 1024, readOnly: true },
+    );
+    const listed = parseWorktreeList(result.stdout, MAX_WORKTREES);
+    let canonicalWanted;
+    try {
+      canonicalWanted = await realpath(worktreePath);
+    } catch {
+      throw operationError("This worktree could not be identified with certainty");
+    }
+    for (const item of listed.items) {
+      let canonicalItem;
+      try {
+        canonicalItem = await realpath(item.path);
+      } catch {
+        continue;
+      }
+      const same = this.platform === "win32"
+        ? canonicalItem.toLowerCase() === canonicalWanted.toLowerCase()
+        : canonicalItem === canonicalWanted;
+      if (same) return { item, canonicalPath: canonicalItem, listed };
+    }
+    throw operationError("This worktree could not be identified with certainty");
+  }
+
+  async createWorktree({ projectPath, branch, directory } = {}) {
+    // Minimal local adapter: the Unified harness 2.26.1 exposes list/remove/
+    // reap/prune but no creation RPC, so creation is a circumscribed
+    // `git worktree add` inside the authorized repository. Never writes
+    // outside the repository root (no external sibling writes without an
+    // explicit authorized folder), never moves the active session, never
+    // overwrites existing branches.
+    const root = await this.#requireRepository(projectPath);
+    await this.#verifyRepositoryIdentity(root);
+    if (
+      typeof branch !== "string" ||
+      branch.length < 1 ||
+      branch.length > 128 ||
+      branch.includes("\0") ||
+      branch.includes("..") ||
+      branch.startsWith("-") ||
+      branch.startsWith("/") ||
+      !/^[A-Za-z0-9_./-]+$/.test(branch)
+    )
+      throw new TypeError("Worktree branch name is invalid");
+    let name = typeof directory === "string" && directory ? directory : branch;
+    if (!/^[A-Za-z0-9_.-]{1,128}$/.test(name))
+      throw new TypeError("Worktree directory name is invalid");
+    const target = path.join(root, ".worktrees", name);
+    if (!inside(root, target, this.platform))
+      throw new TypeError("Worktree directory is invalid");
+    try {
+      await stat(target);
+      throw operationError("This worktree directory already exists");
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    try {
+      await this.#runGit(
+        root,
+        ["show-ref", "--verify", `refs/heads/${branch}`],
+        "Git branch lookup",
+        { readOnly: true },
+      );
+      throw operationError("This branch already exists; choose a new branch name");
+    } catch (error) {
+      if (error.code !== 128) throw error;
+    }
+    await this.#runGit(
+      root,
+      ["worktree", "add", "--quiet", "-b", branch, "--", target],
+      "Git worktree create",
+    );
+    // Verify the worktree really exists before reporting success.
+    const { item } = await this.#findListedWorktree(root, target);
+    void item;
+    return this.worktrees({ projectPath });
+  }
+
+  async removeWorktree({ projectPath, worktreePath } = {}) {
+    // Safe removal only: no --force, no reset --hard, no clean -fd, no
+    // generic directory deletion. Dirty, untracked, unpushed, locked, main
+    // or uncertain worktrees are refused with the reason.
+    const root = await this.#requireRepository(projectPath);
+    await this.#verifyRepositoryIdentity(root);
+    const { item, canonicalPath } = await this.#findListedWorktree(root, worktreePath);
+    let canonicalRoot;
+    try {
+      canonicalRoot = await realpath(root);
+    } catch {
+      throw operationError("The selected project folder is unavailable");
+    }
+    const isMain = this.platform === "win32"
+      ? canonicalPath.toLowerCase() === canonicalRoot.toLowerCase()
+      : canonicalPath === canonicalRoot;
+    if (isMain) throw operationError("The main checkout cannot be removed");
+    if (item.locked) throw operationError("This worktree is locked by Git");
+    if (item.bare) throw operationError("Bare repositories cannot be removed here");
+    const details = await this.#worktreeDetails(canonicalPath);
+    if (details.untrackedCount > 0)
+      throw operationError(
+        `This worktree has ${details.untrackedCount} untracked file(s) (${details.untrackedSample.join(", ")}). Move or delete them explicitly first`,
+        "WORKTREE_UNTRACKED",
+      );
+    if (details.dirty)
+      throw operationError(
+        "This worktree has uncommitted changes. Commit, stash or discard them explicitly first",
+        "WORKTREE_DIRTY",
+      );
+    if (typeof details.ahead === "number" && details.ahead > 0)
+      throw operationError(
+        `This worktree is ${details.ahead} commit(s) ahead of its upstream. Push explicitly first`,
+        "WORKTREE_UNPUSHED",
+      );
+    if (!details.upstream) {
+      // No upstream: refuse when the worktree HEAD diverges from the main
+      // checkout HEAD — those commits exist nowhere else we can verify.
+      const mainHead = await this.#runGit(root, ["rev-parse", "HEAD"], "Git head lookup", { readOnly: true });
+      const treeHead = await this.#runGit(canonicalPath, ["rev-parse", "HEAD"], "Git head lookup", { readOnly: true });
+      if (mainHead.stdout.trim() !== treeHead.stdout.trim())
+        throw operationError(
+          "This worktree may contain commits that exist nowhere else (no upstream). Push or merge explicitly first",
+          "WORKTREE_UNPUSHED",
+        );
+    }
+    // Plain `git worktree remove` refuses dirty worktrees itself; with the
+    // guards above it only removes clean, trackable checkouts.
+    await this.#runGit(root, ["worktree", "remove", "--", canonicalPath], "Git worktree remove");
+    return this.worktrees({ projectPath });
+  }
+
+  async pruneWorktrees({ projectPath } = {}) {
+    // Removes only stale worktree metadata (gitlink files pointing nowhere).
+    // Never deletes real checkouts or user files.
+    const root = await this.#requireRepository(projectPath);
+    await this.#verifyRepositoryIdentity(root);
+    await this.#runGit(root, ["worktree", "prune"], "Git worktree prune");
+    return this.worktrees({ projectPath });
+  }
+
+  async listDirectory({ projectPath, dir } = {}) {
+    // Read-only lazy tree listing. dir is repository-relative ("" or "." for
+    // the root). .git is never listed. Symlink escapes are refused via the
+    // same realpath identity check as Git mutations.
+    const root = await this.#requireRepository(projectPath);
+    const relativeDir = typeof dir === "string" && dir && dir !== "."
+      ? normalizeRelativePath(dir)
+      : "";
+    let absolute = root;
+    if (relativeDir) {
+      absolute = await this.#assertSafePath(root, relativeDir);
+      const details = await stat(absolute).catch((error) => {
+        if (error?.code === "ENOENT" || error?.code === "ENOTDIR")
+          throw operationError("This folder is unavailable");
+        throw operationError("This folder could not be checked");
+      });
+      if (!details.isDirectory())
+        throw new TypeError("Select a folder in the file explorer");
+    }
+    let names;
+    try {
+      names = await readdir(absolute, { withFileTypes: true });
+    } catch {
+      throw operationError("This folder could not be read");
+    }
+    const entries = [];
+    for (const entry of names) {
+      if (relativeDir === "" && entry.name === ".git") continue;
+      if (entry.name === ".git" && relativeDir === "") continue;
+      const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name;
+      let safe;
+      try {
+        safe = normalizeRelativePath(relativePath);
+      } catch {
+        continue;
+      }
+      const isDir = entry.isDirectory();
+      const isSymlink = entry.isSymbolicLink();
+      let size = null;
+      if (!isDir && !isSymlink) {
+        try {
+          size = (await stat(path.join(absolute, entry.name))).size;
+        } catch {
+          size = null;
+        }
+      }
+      entries.push({
+        name: entry.name,
+        path: safe,
+        kind: isDir ? "directory" : "file",
+        symlink: isSymlink,
+        ...(size !== null ? { size } : {}),
+      });
+      if (entries.length >= MAX_DIRECTORY_ENTRIES) break;
+    }
+    entries.sort((a, b) =>
+      a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "directory" ? -1 : 1,
+    );
     return {
       isGitRepository: true,
-      ...parseWorktreeList(result.stdout, MAX_WORKTREES),
+      dir: relativeDir,
+      entries,
+      truncated: names.length > entries.length,
+    };
+  }
+
+  async readFile({ projectPath, path: filePath } = {}) {
+    // Read-only preview source. Never grants the file any Electron privilege:
+    // the renderer displays returned text/data URLs without file:// access.
+    // Binary, oversized and undecodable files get explicit messages.
+    const relativePath = normalizeRelativePath(filePath);
+    const root = await this.#requireRepository(projectPath);
+    const absolute = await this.#assertSafeFilePath(root, relativePath);
+    let details;
+    try {
+      details = await stat(absolute);
+    } catch (error) {
+      if (error?.code === "ENOENT" || error?.code === "ENOTDIR")
+        throw operationError("This file is unavailable");
+      throw operationError("This file could not be checked");
+    }
+    if (details.isDirectory())
+      throw new TypeError("Select individual files to preview");
+    if (details.size > MAX_IMAGE_PREVIEW_BYTES)
+      return {
+        isGitRepository: true,
+        path: relativePath,
+        kind: "too-large",
+        size: details.size,
+        maxBytes: MAX_IMAGE_PREVIEW_BYTES,
+      };
+    const extension = path.extname(relativePath).toLowerCase();
+    if (PREVIEWABLE_IMAGE_EXTENSIONS.has(extension)) {
+      if (details.size > MAX_IMAGE_PREVIEW_BYTES)
+        return { isGitRepository: true, path: relativePath, kind: "too-large", size: details.size, maxBytes: MAX_IMAGE_PREVIEW_BYTES };
+      const buffer = await readFsFile(absolute);
+      return {
+        isGitRepository: true,
+        path: relativePath,
+        kind: "image",
+        size: details.size,
+        mime: extension === ".png" ? "image/png" : extension === ".jpg" || extension === ".jpeg" ? "image/jpeg" : extension === ".webp" ? "image/webp" : extension === ".gif" ? "image/gif" : extension === ".bmp" ? "image/bmp" : "image/x-icon",
+        base64: buffer.toString("base64"),
+      };
+    }
+    const buffer = await readFsFile(absolute);
+    const head = buffer.subarray(0, 8192);
+    if (head.includes(0))
+      return { isGitRepository: true, path: relativePath, kind: "binary", size: details.size };
+    const truncated = buffer.length > MAX_PREVIEW_BYTES;
+    const text = buffer.subarray(0, MAX_PREVIEW_BYTES).toString("utf8");
+    return {
+      isGitRepository: true,
+      path: relativePath,
+      kind: extension === ".md" || extension === ".markdown" ? "markdown" : extension === ".json" ? "json" : "text",
+      size: details.size,
+      text,
+      truncated,
+      maxBytes: MAX_PREVIEW_BYTES,
     };
   }
 
@@ -592,6 +1067,68 @@ export class GitWorkspaceService {
         reviewDecision:
           typeof item.reviewDecision === "string" ? item.reviewDecision : null,
       })),
+    };
+  }
+
+  async pullRequestDetails({ projectPath, number } = {}) {
+    // Read-only PR detail: files changed and check status for review. Never
+    // pushes, merges or approves — opening the PR page stays explicit.
+    if (!Number.isInteger(number) || number < 1 || number > 999999)
+      throw new TypeError("Pull request number is invalid");
+    const root = await this.#resolveRepository(projectPath);
+    if (!root) throw operationError("The selected project is not a Git repository");
+    const repository = await this.#githubRepository(root);
+    if (!repository)
+      throw operationError("The selected repository has no GitHub origin remote");
+    try {
+      await this.#runGh(root, ["auth", "status", "--hostname", "github.com"], "GitHub authentication");
+    } catch {
+      throw operationError("Authenticate the GitHub CLI to read pull request details");
+    }
+    const result = await this.#runGh(
+      root,
+      [
+        "pr", "view", String(number),
+        "--repo", repository,
+        "--json",
+        "number,title,state,url,headRefName,baseRefName,isDraft,reviewDecision,body,files,commits,statusCheckRollup",
+      ],
+      "GitHub pull request details",
+    );
+    let data;
+    try {
+      data = JSON.parse(result.stdout);
+    } catch {
+      throw operationError("GitHub returned invalid pull request data");
+    }
+    const files = Array.isArray(data.files) ? data.files.slice(0, 100).map((f) => ({
+      path: typeof f?.path === "string" ? f.path.slice(0, 1024) : "",
+      additions: Number.isInteger(f?.additions) ? f.additions : 0,
+      deletions: Number.isInteger(f?.deletions) ? f.deletions : 0,
+    })).filter((f) => f.path) : [];
+    const checks = Array.isArray(data.statusCheckRollup)
+      ? data.statusCheckRollup.slice(0, 50).map((c) => ({
+          name: typeof c?.name === "string" ? c.name.slice(0, 256) : "check",
+          status: typeof c?.status === "string" ? c.status : "UNKNOWN",
+          conclusion: typeof c?.conclusion === "string" ? c.conclusion : null,
+        }))
+      : [];
+    return {
+      isGitRepository: true,
+      repository,
+      number: Number.isInteger(data.number) ? data.number : number,
+      title: typeof data.title === "string" ? data.title.slice(0, 300) : "",
+      state: typeof data.state === "string" ? data.state : "UNKNOWN",
+      url: this.#validatePullRequestUrl(data.url, repository),
+      headRefName: typeof data.headRefName === "string" ? data.headRefName.slice(0, 256) : "",
+      baseRefName: typeof data.baseRefName === "string" ? data.baseRefName.slice(0, 256) : "",
+      isDraft: Boolean(data.isDraft),
+      reviewDecision: typeof data.reviewDecision === "string" ? data.reviewDecision : null,
+      body: typeof data.body === "string" ? data.body.slice(0, 10000) : "",
+      commits: Array.isArray(data.commits) ? data.commits.length : 0,
+      files,
+      filesTruncated: Array.isArray(data.files) && data.files.length > files.length,
+      checks,
     };
   }
 
@@ -745,6 +1282,12 @@ export class GitWorkspaceService {
       if (error.code === 128) return null;
       throw error;
     }
+    // The authorized root must be the repository (or linked-worktree) root
+    // itself. A sibling worktree checked out beside the main repository is a
+    // legitimate independent workspace: it is allowed only when the user
+    // explicitly selects that worktree folder, which then resolves to its own
+    // top level here. Operating on a sibling through the main root is never
+    // allowed — mutations only accept repository-relative paths.
     if (
       !inside(root, topLevel, this.platform) ||
       !inside(topLevel, root, this.platform)
@@ -802,10 +1345,36 @@ export class GitWorkspaceService {
     return absolute;
   }
 
+  async #verifyRepositoryIdentity(root) {
+    // TOCTOU mitigation: the .git directory / worktree link could be swapped
+    // between #resolveRepository and a mutation. Re-resolve the top level
+    // immediately before mutating and refuse when the identity changed.
+    let topLevel;
+    try {
+      const result = await this.#runGit(
+        root,
+        ["rev-parse", "--show-toplevel"],
+        "Git repository lookup",
+        { readOnly: true },
+      );
+      topLevel = await realpath(result.stdout.trim());
+    } catch (error) {
+      throw operationError("The selected Git repository changed during the operation");
+    }
+    if (
+      !inside(root, topLevel, this.platform) ||
+      !inside(topLevel, root, this.platform)
+    )
+      throw operationError("The selected Git repository changed during the operation");
+    return root;
+  }
+
   async #assertSafeFilePath(root, relativePath) {
     const absolute = await this.#assertSafePath(root, relativePath);
     try {
-      if ((await lstat(absolute)).isDirectory())
+      // stat follows symlinks: a symlink pointing to a directory is still a
+      // directory selection and is rejected. Missing paths (new files) pass.
+      if ((await stat(absolute)).isDirectory())
         throw new TypeError("Select individual files in the Git workspace");
     } catch (error) {
       if (error instanceof TypeError) throw error;

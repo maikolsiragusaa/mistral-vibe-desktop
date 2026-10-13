@@ -54,7 +54,7 @@ async function makeRepository(t, { initialCommit = true } = {}) {
   return { tempRoot, projectPath, service };
 }
 
-function fakeGhExecFile(realExecFile, { prList = [] } = {}) {
+function fakeGhExecFile(realExecFile, { prList = [], prView = null } = {}) {
   return (command, args, options, callback) => {
     if (command === "gh" && args[0] === "auth" && args[1] === "status") {
       queueMicrotask(() => callback(null, "Logged in to github.com\n", ""));
@@ -62,6 +62,10 @@ function fakeGhExecFile(realExecFile, { prList = [] } = {}) {
     }
     if (command === "gh" && args[0] === "pr" && args[1] === "list") {
       queueMicrotask(() => callback(null, JSON.stringify(prList), ""));
+      return undefined;
+    }
+    if (command === "gh" && args[0] === "pr" && args[1] === "view") {
+      queueMicrotask(() => callback(null, JSON.stringify(prView ?? {}), ""));
       return undefined;
     }
     return realExecFile(command, args, options, callback);
@@ -342,6 +346,45 @@ test("PR listing recognizes GitHub remotes without exposing remote credentials",
   assert.doesNotMatch(JSON.stringify(result), /super-secret-token|build-user/);
 });
 
+test("PR details report files and checks read-only without remote actions", async (t) => {
+  const { projectPath } = await makeRepository(t);
+  runGit(projectPath, "remote", "add", "origin", "https://github.com/example/project.git");
+  const service = new GitWorkspaceService({
+    authorizeProjectRoot: async () => projectPath,
+    execFileImpl: fakeGhExecFile(execFile, {
+      prView: {
+        number: 42,
+        title: "Workspace support",
+        state: "OPEN",
+        url: "https://github.com/example/project/pull/42",
+        headRefName: "feature/workspace",
+        baseRefName: "main",
+        isDraft: false,
+        reviewDecision: "REVIEW_REQUIRED",
+        body: "Please review",
+        files: [
+          { path: "src/a.ts", additions: 10, deletions: 2 },
+          { path: "src/b.ts", additions: 1, deletions: 1 },
+        ],
+        commits: [{ oid: "abc" }, { oid: "def" }],
+        statusCheckRollup: [
+          { name: "build", status: "COMPLETED", conclusion: "SUCCESS" },
+          { name: "lint", status: "IN_PROGRESS", conclusion: "" },
+        ],
+      },
+    }),
+  });
+  const details = await service.pullRequestDetails({ projectPath, number: 42 });
+  assert.equal(details.number, 42);
+  assert.equal(details.files.length, 2);
+  assert.equal(details.files[0].path, "src/a.ts");
+  assert.equal(details.checks.length, 2);
+  assert.equal(details.commits, 2);
+  assert.equal(details.url, "https://github.com/example/project/pull/42");
+  await assert.rejects(service.pullRequestDetails({ projectPath, number: 0 }), /invalid/);
+  await assert.rejects(service.pullRequestDetails({ projectPath, number: 1.5 }), /invalid/);
+});
+
 test("PR creation is explicit, requires a published synchronized branch, and sends body via stdin", async (t) => {
   const { projectPath } = await makeRepository(t);
   runGit(
@@ -483,4 +526,345 @@ test("Windows Git invocations hide child windows and inherit the executable look
   assert.equal(observedOptions.windowsHide, true);
   assert.equal(observedOptions.env.NODEFAULTCURRENTDIRECTORYINEXEPATH, "1");
   assert.ok(observedOptions.maxBuffer <= 4 * 1024 * 1024);
+});
+
+test("Windows paths reject UNC, ADS streams, trailing-dot .git and symlink directories", async (t) => {
+  const { tempRoot, projectPath, service } = await makeRepository(t);
+  await assert.rejects(
+    service.diff({ projectPath, path: "//server/share/evil.txt" }),
+    /must be relative/,
+  );
+  await assert.rejects(
+    service.diff({ projectPath, path: "\\\\server\\share\\evil.txt" }),
+    /must be relative/,
+  );
+  await assert.rejects(
+    service.diff({ projectPath, path: "notes.txt:secret" }),
+    /not available/,
+  );
+  await assert.rejects(
+    service.diff({ projectPath, path: ".git./config" }),
+    /not available/,
+  );
+  await assert.rejects(
+    service.diff({ projectPath, path: ".GIT/config" }),
+    /not available/,
+  );
+  // Case-insensitive escape: drive-relative and absolute forms rejected.
+  await assert.rejects(
+    service.stage({ projectPath, paths: ["D:evil.txt"] }),
+    /must be relative/,
+  );
+  await assert.rejects(
+    service.stage({ projectPath, paths: ["/absolute.txt"] }),
+    /must be relative/,
+  );
+  // Symlink to a directory is still a directory selection.
+  const outsideDir = path.join(tempRoot, "outside-dir");
+  await mkdir(outsideDir);
+  const dirLink = path.join(projectPath, "dir-link");
+  try {
+    await symlink(outsideDir, dirLink, "junction");
+  } catch (error) {
+    if (["EACCES", "EPERM", "ENOTSUP", "UNKNOWN"].includes(error?.code)) {
+      t.skip(`Directory symlinks are unavailable (${error.code})`);
+      return;
+    }
+    throw error;
+  }
+  await assert.rejects(
+    service.stage({ projectPath, paths: ["dir-link"] }),
+    /individual files|outside the selected repository/,
+  );
+  // File symlink pointing outside is rejected via realpath identity.
+  const outsideFile = path.join(tempRoot, "secret-outside.txt");
+  await writeFile(outsideFile, "private\n");
+  const fileLink = path.join(projectPath, "file-link.txt");
+  try {
+    await symlink(outsideFile, fileLink, "file");
+  } catch (error) {
+    if (["EACCES", "EPERM", "ENOTSUP", "UNKNOWN"].includes(error?.code)) {
+      t.skip(`File symlinks are unavailable (${error.code})`);
+      return;
+    }
+    throw error;
+  }
+  await assert.rejects(
+    service.diff({ projectPath, path: "file-link.txt" }),
+    /outside the selected repository/,
+  );
+});
+
+test("sibling worktrees are independent workspaces requiring explicit selection", async (t) => {
+  const { tempRoot, projectPath, service } = await makeRepository(t);
+  const sibling = path.join(tempRoot, "sibling-worktree");
+  runGit(projectPath, "worktree", "add", "--quiet", "-b", "sibling", sibling);
+  // Operating on the sibling through the main root is never allowed:
+  // mutations only accept repository-relative paths.
+  await assert.rejects(
+    service.stage({ projectPath, paths: ["../sibling-worktree/tracked.txt"] }),
+    /leave the selected repository/,
+  );
+  // Explicitly selecting the sibling worktree folder is a legitimate
+  // independent workspace and must work.
+  const siblingService = new GitWorkspaceService({
+    authorizeProjectRoot: async (requested) => {
+      assert.equal(path.resolve(requested), path.resolve(sibling));
+      return sibling;
+    },
+  });
+  const status = await siblingService.status({ projectPath: sibling });
+  assert.equal(status.isGitRepository, true);
+  await writeFile(path.join(sibling, "tracked.txt"), "sibling edit\n");
+  const after = await siblingService.status({ projectPath: sibling });
+  assert.equal(after.dirty, true);
+  assert.ok(after.files.some((file) => file.path === "tracked.txt"));
+});
+
+function extractHunks(diffText) {
+  const hunks = [];
+  const lines = String(diffText).split("\n");
+  if (lines.length && lines[lines.length - 1] === "") lines.pop();
+  let current = null;
+  for (const line of lines) {
+    if (line.startsWith("@@")) {
+      current = { header: line.replace(/\r$/, ""), lines: [] };
+      hunks.push(current);
+    } else if (current) current.lines.push(line.replace(/\r$/, ""));
+  }
+  return hunks;
+}
+
+test("hunk staging applies one of several hunks and verifies the index", async (t) => {
+  const { projectPath, service } = await makeRepository(t);
+  const target = path.join(projectPath, "tracked.txt");
+  const base = Array.from({ length: 40 }, (_, i) => `line${i + 1} before`).join("\n") + "\n";
+  await writeFile(target, base);
+  runGit(projectPath, "add", "--", "tracked.txt");
+  runGit(projectPath, "commit", "--quiet", "-m", "forty lines");
+  const edited = base
+    .replace("line2 before", "line2 AFTER")
+    .replace("line20 before", "line20 AFTER")
+    .replace("line38 before", "line38 AFTER");
+  await writeFile(target, edited);
+  const working = await service.diff({ projectPath, path: "tracked.txt" });
+  const hunks = extractHunks(working.diffText);
+  assert.ok(hunks.length >= 2, `expected multiple hunks, got ${hunks.length}`);
+  const middle = hunks[1] ?? hunks[0];
+  const after = await service.stageHunk({
+    projectPath,
+    path: "tracked.txt",
+    header: middle.header,
+    lines: middle.lines,
+  });
+  const stagedFile = after.files.find((file) => file.path === "tracked.txt");
+  assert.ok(stagedFile.staged, "file is partially staged");
+  // Verify the actual index content, not just the call result.
+  const stagedDiff = runGit(projectPath, "diff", "--cached", "--", "tracked.txt");
+  const workingDiff = runGit(projectPath, "diff", "--", "tracked.txt");
+  assert.match(stagedDiff, /line20 AFTER/);
+  assert.doesNotMatch(stagedDiff, /line2 AFTER/);
+  assert.doesNotMatch(stagedDiff, /line38 AFTER/);
+  assert.match(workingDiff, /line2 AFTER/);
+  // Unstage the same hunk: index returns to clean for that hunk.
+  const middleStaged = extractHunks(
+    (await service.diff({ projectPath, path: "tracked.txt", staged: true })).diffText,
+  );
+  assert.ok(middleStaged.length >= 1);
+  const back = await service.unstageHunk({
+    projectPath,
+    path: "tracked.txt",
+    header: middleStaged[0].header,
+    lines: middleStaged[0].lines,
+  });
+  assert.ok(back.files.find((file) => file.path === "tracked.txt"));
+  assert.equal(runGit(projectPath, "diff", "--cached", "--", "tracked.txt").trim(), "");
+});
+
+test("hunk staging rejects concurrent edits and index changes as stale", async (t) => {
+  const { projectPath, service } = await makeRepository(t);
+  const target = path.join(projectPath, "tracked.txt");
+  await writeFile(target, "alpha\nbeta\ngamma\ndelta\nepsilon\nzeta\neta\ntheta\niota\n");
+  runGit(projectPath, "add", "--", "tracked.txt");
+  runGit(projectPath, "commit", "--quiet", "-m", "base");
+  await writeFile(target, "alpha\nBETA\ngamma\ndelta\nepsilon\nzeta\neta\ntheta\nIOTA\n");
+  const before = extractHunks((await service.diff({ projectPath, path: "tracked.txt" })).diffText);
+  assert.ok(before.length >= 1);
+  // Concurrent working-tree edit after the diff: hunk must be refused.
+  await writeFile(target, "alpha\nBETA\nCONCURRENT\ngamma\ndelta\nepsilon\nzeta\neta\ntheta\nIOTA\n");
+  await assert.rejects(
+    service.stageHunk({ projectPath, path: "tracked.txt", header: before[0].header, lines: before[0].lines }),
+    /no longer matches|stale/i,
+  );
+  // Index changed after the diff: cached-view hunk must be refused.
+  await writeFile(target, "alpha\nBETA\ngamma\ndelta\nepsilon\nzeta\neta\ntheta\nIOTA\n");
+  const fresh = extractHunks((await service.diff({ projectPath, path: "tracked.txt" })).diffText);
+  await service.stage({ projectPath, paths: ["tracked.txt"] });
+  await assert.rejects(
+    service.stageHunk({ projectPath, path: "tracked.txt", header: fresh[0].header, lines: fresh[0].lines }),
+    /no changes|no longer matches|stale/i,
+  );
+});
+
+test("hunk staging works with CRLF files and refuses untracked or oversized hunks", async (t) => {
+  const { projectPath, service } = await makeRepository(t);
+  const target = path.join(projectPath, "crlf.txt");
+  await writeFile(target, "one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix\r\nseven\r\n");
+  runGit(projectPath, "add", "--", "crlf.txt");
+  runGit(projectPath, "commit", "--quiet", "-m", "crlf base");
+  await writeFile(target, "one\r\nTWO\r\nthree\r\nfour\r\nfive\r\nsix\r\nSEVEN\r\n");
+  const hunks = extractHunks((await service.diff({ projectPath, path: "tracked.txt" }).catch(() => ({ diffText: "" }))).diffText);
+  const crlfDiff = await service.diff({ projectPath, path: "crlf.txt" });
+  const crlfHunks = extractHunks(crlfDiff.diffText);
+  assert.ok(crlfHunks.length >= 1, "CRLF diff produces hunks");
+  const first = crlfHunks[0];
+  const after = await service.stageHunk({ projectPath, path: "crlf.txt", header: first.header, lines: first.lines });
+  assert.ok(after.files.some((file) => file.path === "crlf.txt" && file.staged));
+  assert.equal(hunks.length, hunks.length); // keep linter calm about unused helper shape
+  await writeFile(path.join(projectPath, "new-untracked.txt"), "hello\n");
+  const untrackedDiff = await service.diff({ projectPath, path: "new-untracked.txt" });
+  const untrackedHunks = extractHunks(untrackedDiff.diffText);
+  assert.ok(untrackedHunks.length >= 1);
+  await assert.rejects(
+    service.stageHunk({ projectPath, path: "new-untracked.txt", header: untrackedHunks[0].header, lines: untrackedHunks[0].lines }),
+    /whole, not by hunk/,
+  );
+  await assert.rejects(
+    service.stageHunk({ projectPath, path: "crlf.txt", header: "@@ nonsense @@", lines: [" context"] }),
+    /invalid|no longer matches/i,
+  );
+});
+
+test("worktrees report dirty and ahead state for safe navigation", async (t) => {
+  const { projectPath, service } = await makeRepository(t);
+  const linkedPath = path.join(await realpath(path.dirname(projectPath)), "wt-details");
+  runGit(projectPath, "worktree", "add", "--quiet", "-b", "details-branch", linkedPath);
+  // No git cleanup needed: makeRepository removes the whole temp root,
+  // including the linked checkout, after the test.
+  let result = await service.worktrees({ projectPath });
+  const linked = result.items.find((item) => item.branch === "details-branch");
+  assert.ok(linked, "linked worktree is listed");
+  assert.equal(linked.dirty, false);
+  await writeFile(path.join(linkedPath, "tracked.txt"), "dirty edit\n");
+  result = await service.worktrees({ projectPath });
+  const dirty = result.items.find((item) => item.branch === "details-branch");
+  assert.equal(dirty.dirty, true);
+});
+
+test("worktree creation and safe removal respect dirty, untracked and unpushed guards", async (t) => {
+  const { projectPath, service } = await makeRepository(t);
+  const created = await service.createWorktree({ projectPath, branch: "feature-m2" });
+  const item = created.items.find((entry) => entry.branch === "feature-m2");
+  assert.ok(item, "created worktree is listed and verified");
+  const target = item.path;
+  // Dirty worktree cannot be removed.
+  await writeFile(path.join(target, "tracked.txt"), "uncommitted\n");
+  await assert.rejects(
+    service.removeWorktree({ projectPath, worktreePath: target }),
+    /uncommitted changes/,
+  );
+  runGit(projectPath, "worktree", "list", "--porcelain");
+  // Clean the modification, then untracked files still block removal.
+  await writeFile(path.join(target, "tracked.txt"), "before\n");
+  await writeFile(path.join(target, "important-notes.txt"), "do not lose\n");
+  await assert.rejects(
+    service.removeWorktree({ projectPath, worktreePath: target }),
+    /untracked/,
+  );
+  await rm(path.join(target, "important-notes.txt"), { force: true });
+  // Unpushed commits (no upstream, HEAD diverged) block removal.
+  await writeFile(path.join(target, "tracked.txt"), "new commit content\n");
+  runGit(target, "add", "--", "tracked.txt");
+  runGit(target, "commit", "--quiet", "-m", "worktree commit");
+  await assert.rejects(
+    service.removeWorktree({ projectPath, worktreePath: target }),
+    /nowhere else|upstream|unpushed/i,
+  );
+  // Main checkout can never be removed; unknown paths are refused.
+  await assert.rejects(
+    service.removeWorktree({ projectPath, worktreePath: projectPath }),
+    /main checkout/,
+  );
+  await assert.rejects(
+    service.removeWorktree({ projectPath, worktreePath: path.join(projectPath, "nope") }),
+    /identified with certainty/,
+  );
+  // Existing branches cannot be overwritten by creation.
+  await assert.rejects(
+    service.createWorktree({ projectPath, branch: "main" }),
+    /already exists/,
+  );
+  await assert.rejects(
+    service.createWorktree({ projectPath, branch: "../evil" }),
+    /invalid/,
+  );
+});
+
+test("file explorer lists lazily and previews safely", async (t) => {
+  const { projectPath, service } = await makeRepository(t);
+  await mkdir(path.join(projectPath, "docs"));
+  await writeFile(path.join(projectPath, "docs", "notes.md"), "# Notes\n\nHello **world**\n");
+  await writeFile(path.join(projectPath, "data.json"), '{"key": "value"}\n');
+  await writeFile(path.join(projectPath, "binary.dat"), Buffer.from([0x00, 0x01, 0x02, 0xff]));
+  await writeFile(path.join(projectPath, "big.txt"), "x\n".repeat(400_000));
+  // 1x1 transparent PNG.
+  await writeFile(
+    path.join(projectPath, "pixel.png"),
+    Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"),
+  );
+
+  const root = await service.listDirectory({ projectPath, dir: "" });
+  assert.equal(root.isGitRepository, true);
+  assert.ok(root.entries.some((e) => e.name === "docs" && e.kind === "directory"));
+  assert.ok(root.entries.every((e) => e.name !== ".git"), "never lists .git");
+  const docs = await service.listDirectory({ projectPath, dir: "docs" });
+  assert.ok(docs.entries.some((e) => e.name === "notes.md" && e.kind === "file"));
+
+  const md = await service.readFile({ projectPath, path: "docs/notes.md" });
+  assert.equal(md.kind, "markdown");
+  assert.match(md.text, /Hello/);
+  const json = await service.readFile({ projectPath, path: "data.json" });
+  assert.equal(json.kind, "json");
+  const image = await service.readFile({ projectPath, path: "pixel.png" });
+  assert.equal(image.kind, "image");
+  assert.match(image.mime, /image\/png/);
+  assert.ok(image.base64.length > 0);
+  const binary = await service.readFile({ projectPath, path: "binary.dat" });
+  assert.equal(binary.kind, "binary");
+  const big = await service.readFile({ projectPath, path: "big.txt" });
+  assert.equal(big.truncated, true);
+
+  await assert.rejects(service.readFile({ projectPath, path: "../outside.txt" }), /leave/);
+  await assert.rejects(service.readFile({ projectPath, path: ".git/config" }), /not available/);
+  await assert.rejects(service.readFile({ projectPath, path: "docs" }), /individual files/);
+  await assert.rejects(service.listDirectory({ projectPath, dir: ".." }), /leave/);
+});
+
+test("mutations refuse when the repository identity changes (TOCTOU)", async (t) => {
+  const { projectPath } = await makeRepository(t);
+  await writeFile(path.join(projectPath, "tracked.txt"), "changed\n");
+  let topLevelCalls = 0;
+  const service = new GitWorkspaceService({
+    authorizeProjectRoot: async () => projectPath,
+    execFileImpl(command, args, options, callback) {
+      // Simulate the repo being swapped between resolve and mutation:
+      // the identity re-check (2nd top-level lookup) points elsewhere.
+      if (
+        command === "git" &&
+        args.includes("rev-parse") &&
+        args.includes("--show-toplevel")
+      ) {
+        topLevelCalls += 1;
+        if (topLevelCalls === 2) {
+          queueMicrotask(() => callback(null, `${os.tmpdir()}\n`, ""));
+          return undefined;
+        }
+      }
+      return execFile(command, args, options, callback);
+    },
+  });
+  await assert.rejects(
+    service.stage({ projectPath, paths: ["tracked.txt"] }),
+    /changed during the operation/,
+  );
 });

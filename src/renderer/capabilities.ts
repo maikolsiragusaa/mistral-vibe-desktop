@@ -1,14 +1,16 @@
-/** Lightweight runtime capability detection.
+/** Capability state without side effects.
  *
- * The protocol registry declares methods; the selected runtime (Unified vs
- * legacy) decides which ones run. This probe distinguishes, per session:
- * - verified: a cheap call succeeded.
- * - unsupported: the engine answered method_not_found / not implemented.
- * - unknown: never probed, or the probe failed for another reason.
- *
- * No second protocol and no version table: results are cached per session and
- * only cheap, non-mutating probes are used. Callers disable incompatible
- * actions with a concise explanation instead of firing doomed requests.
+ * Rules (M2.0 hardening):
+ * - Never auto-probe mutative RPCs. `session/compact` compacts history when
+ *   the engine implements it, so merely opening a menu must not invoke it.
+ * - Official discovery (runtime/server capability lists) is adopted when
+ *   available, and it can only mark methods as verified — never unsupported.
+ * - The registry alone never marks a method unsupported. Unsupported comes
+ *   only from an explicit user-initiated call that answers method_not_found /
+ *   not implemented.
+ * - Cache is bound to the runtime identity (server version/instance). When
+ *   the identity changes the cache is invalidated.
+ * - Unknown is the safe default for anything not verifiable without effects.
  */
 
 export type CapabilityState = "verified" | "unsupported" | "unknown";
@@ -26,7 +28,27 @@ export const OPTIONAL_METHODS = [
 
 export type OptionalMethod = (typeof OPTIONAL_METHODS)[number];
 
+/** Methods with observable side effects: never probed automatically. */
+export const MUTATIVE_METHODS: ReadonlySet<string> = new Set([
+  "session/compact",
+  "review/approve",
+  "review/revert",
+  "session/rewind",
+  "session/history/clear",
+]);
+
+export function isMutativeMethod(method: string): boolean {
+  return MUTATIVE_METHODS.has(method);
+}
+
+/** True only for cheap, read-only probes that are safe to run automatically. */
+export function canProbeSafely(method: string): boolean {
+  return !isMutativeMethod(method);
+}
+
 const cache = new Map<string, Map<string, CapabilityState>>();
+const sessionRuntimeVersions = new Map<string, string>();
+let runtimeIdentity = "";
 
 function sessionCache(sessionId: string): Map<string, CapabilityState> {
   let entry = cache.get(sessionId);
@@ -49,7 +71,61 @@ export function setCapability(
   sessionCache(sessionId).set(method, state);
   if (cache.size > 20) {
     const oldest = cache.keys().next().value;
-    if (oldest !== undefined) cache.delete(oldest);
+    if (oldest !== undefined) {
+      cache.delete(oldest);
+      sessionRuntimeVersions.delete(oldest);
+    }
+  }
+}
+
+export function getRuntimeIdentity(): string {
+  return runtimeIdentity;
+}
+
+/** Bind the cache to a runtime version/instance; clears on change. */
+export function setRuntimeIdentity(identity: string): void {
+  if (identity !== runtimeIdentity) {
+    runtimeIdentity = identity;
+    cache.clear();
+    sessionRuntimeVersions.clear();
+  }
+}
+
+/**
+ * Record which runtime version a session was seen on. A version change for
+ * the same session id invalidates that session's cached verdicts.
+ */
+export function noteSessionRuntime(sessionId: string, serverVersion: string): void {
+  const previous = sessionRuntimeVersions.get(sessionId);
+  if (previous === undefined) {
+    sessionRuntimeVersions.set(sessionId, serverVersion);
+    return;
+  }
+  if (previous !== serverVersion) {
+    sessionRuntimeVersions.set(sessionId, serverVersion);
+    cache.delete(sessionId);
+  }
+}
+
+/**
+ * Adopt official capability discovery (e.g. runtime/read capabilities or
+ * initialize serverInfo lists). Only marks listed methods as verified;
+ * never marks anything unsupported — the registry alone is not a verdict.
+ */
+export function adoptDiscoveredCapabilities(
+  sessionId: string,
+  capabilities: unknown,
+  serverVersion?: string,
+): void {
+  if (typeof serverVersion === "string" && serverVersion) {
+    noteSessionRuntime(sessionId, serverVersion);
+  }
+  if (!Array.isArray(capabilities)) return;
+  const listed = new Set(capabilities.filter((c): c is string => typeof c === "string"));
+  for (const method of OPTIONAL_METHODS) {
+    if (listed.has(method)) {
+      setCapability(sessionId, method, "verified");
+    }
   }
 }
 
@@ -57,12 +133,33 @@ export function isUnsupportedError(message: string): boolean {
   return /method[_ ]not[_ ]found|not[_ ]implemented/i.test(message);
 }
 
+/** Record an explicit user-initiated success (the only way mutative methods verify). */
+export function markExplicitSuccess(sessionId: string, method: string): void {
+  setCapability(sessionId, method, "verified");
+}
+
+/** Record an explicit user-initiated not-implemented answer. */
+export function markExplicitUnsupported(
+  sessionId: string,
+  method: string,
+  message: string,
+): boolean {
+  if (!isUnsupportedError(message)) return false;
+  setCapability(sessionId, method, "unsupported");
+  return true;
+}
+
 type Requester = <T = unknown>(
   method: string,
   params?: Record<string, unknown>,
 ) => Promise<T>;
 
-/** Probe one optional method with a cheap read-only call. Never mutates. */
+/**
+ * Probe one optional method with a cheap read-only call. Never mutates:
+ * mutative methods always resolve to the cached state (unknown unless a
+ * previous explicit action verified or disproved them) without invoking the
+ * requester at all.
+ */
 export async function probeCapability(
   request: Requester,
   sessionId: string,
@@ -70,6 +167,11 @@ export async function probeCapability(
 ): Promise<CapabilityState> {
   const known = getCapability(sessionId, method);
   if (known !== "unknown") return known;
+  if (isMutativeMethod(method)) {
+    // Mutative RPCs are verified only via explicit user actions that call
+    // them directly. No automatic probe, no side effect.
+    return "unknown";
+  }
   try {
     await request(method, { sessionId });
     setCapability(sessionId, method, "verified");
@@ -87,4 +189,5 @@ export async function probeCapability(
 
 export function forgetSession(sessionId: string): void {
   cache.delete(sessionId);
+  sessionRuntimeVersions.delete(sessionId);
 }

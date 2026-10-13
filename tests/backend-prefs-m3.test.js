@@ -30,8 +30,11 @@ async function createBackend(t) {
 test("M3 prefs persist worktree roots, custom editor and notification toggle", async (t) => {
   const { backend, selectedProject } = await createBackend(t);
   await backend.chooseProject();
-  const customRoot = path.join(os.tmpdir(), "vibe-m3-custom");
-  await fs.mkdir(customRoot, { recursive: true });
+  // The service keys worktreeRoots by canonical path (short 8.3 TEMP names
+  // on CI runners canonicalize away): index by realpath like production
+  // callers, which pass dialog-canonicalized project paths.
+  const repoKey = await fs.realpath(selectedProject);
+  const customRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vibe-m3-custom-"));
   const saved = await backend.savePreferences({
     theme: "dark",
     recentProjects: [selectedProject],
@@ -39,7 +42,7 @@ test("M3 prefs persist worktree roots, custom editor and notification toggle", a
     customEditorPath: "C:\\Editors\\Code.exe",
     notificationsEnabled: false,
   });
-  assert.equal(saved.worktreeRoots[selectedProject], customRoot);
+  assert.equal(saved.worktreeRoots[repoKey], customRoot);
   assert.equal(saved.customEditorPath, "C:\\Editors\\Code.exe");
   assert.equal(saved.notificationsEnabled, false);
   const reloaded = await backend.readPreferences();

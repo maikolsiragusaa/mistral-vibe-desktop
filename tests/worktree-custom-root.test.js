@@ -53,7 +53,9 @@ test("custom-root creation lands outside the repo with preview parity", async (t
   assert.equal(created.items.length, beforeCount + 1);
   const row = created.items.find((w) => w.branch === "feature/custom-a");
   assert.ok(row);
-  assert.equal(path.resolve(row.path), path.resolve(preview.target));
+  // Compare canonical paths: CI runners expose TEMP through short 8.3
+  // names, so raw string equality would be host-dependent.
+  assert.equal(await realpath(row.path), await realpath(preview.target));
   // Main checkout untouched.
   const status = await service.status({ projectPath });
   assert.equal(status.branch, "main");

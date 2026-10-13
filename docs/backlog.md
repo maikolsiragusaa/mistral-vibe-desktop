@@ -5,7 +5,10 @@ navigation, tab-close vs stop separation, official session fork/rewind/rename/
 markAsSeen/compact/delete, durable opt-in drafts, loops GUI and Cloud panels
 through projectLinks/vibeCode/teleport with preflight. The backend allowlist
 now covers ~60 official methods with pool isolation.
-The [capability matrix](capabilities.md) records their exact boundaries.
+M1.1 hardens it: fork ownership (detached forks worker-free), subagent sync
+states with three-child live proof, drafts off-by-default with migration,
+real preflight, loop safety, capability detection and a recorded security
+review. The [capability matrix](capabilities.md) records their exact boundaries.
 
 | Priority | Next increment                             | Acceptance                                                                                                                                              |
 | -------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |

@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.3.0-M1.1 — Stabilization & reliability (unreleased baseline 0.3.0)
+
+P0/P1 hardening on top of M1, no new large features, no harness changes.
+
+- Session ownership: detached `session/fork` (`attach:false`) no longer
+  consumes a worker slot or appears as owned (verified against upstream
+  2.26.1: detached forks shut down server-side with `session_attached=false`).
+  Unlisted fork sources fail before allocation; duplicate-id races stop the
+  stray worker; rewind/continue ownership remapping covered by tests.
+- Subagent inspection: sync state (loading/syncing/watching/synced/stale/
+  error), last-update time, non-destructive errors with manual retry, backoff
+  on real errors, suspension while hidden with immediate resume, stale-response
+  guards, event-triggered refresh (debounced) over public `session/read`, and
+  history paging for long child transcripts. Real-engine proof: three
+  concurrent fixture children opened and read while the parent works.
+- Drafts: persistence is now opt-in and OFF by default (M1 default-on fixed).
+  Legacy M1 drafts are surfaced once without silent deletion or re-enabling;
+  Settings documents scope (unsent text only, ≤50/100 KiB) and offers explicit
+  clear. Real function tests replace source-text assertions.
+- Cloud preflight: Git validity from `git/status`, provider from the runtime
+  inventory record (never display-name regex; GLM/custom → incompatible),
+  credentials presence, tier/GitHub-App always unknown and delegated to
+  Mistral. Picker opening vs transfer completion are reported distinctly.
+- Loops: two-step Clear All confirmation, canonical backend ids (unidentified
+  rows cannot be deleted), per-mutation pending state, interval/next-fire
+  display, backend-inactive notice, malformed-payload tolerance.
+- Capability detection: per-session cache distinguishing verified/
+  unsupported/unknown; `session/compact` disables with an explanation when the
+  engine reports not-implemented (2.26.1); auth/transport failures never become
+  verdicts. `agents/list` joins `review/*`, `stats/read`, `diagnostics/list`,
+  `tools/list` as Unified `method_not_found`.
+- Security review recorded in `docs/security-review-m1.1.md`; no new IPC,
+  sandbox/CSP/approvals unchanged. Residual: subpath canonicalization uses
+  `resolve` (same as pre-existing shell handling; Git keeps escape rejection).
+- Suite: 84 tests passing (was 61). Real Electron baseline + expansion pass;
+  sidebar-drag flake observed once in 6 runs (existing pointer-timing flake,
+  covered by the documented single-retry policy; no timeout inflation).
+
 ## 0.3.0 — Workspace evolution M1: navigation, subagents, sessions
 
 Foundation UX and subagent supervision on the official engine (Vibe 2.26.1).

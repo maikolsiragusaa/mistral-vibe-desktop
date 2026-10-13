@@ -64,7 +64,9 @@ No upstream issue or public message is submitted automatically.
 - `session/markAsSeen` OK; `session/rename` OK; `session/turns/list` OK;
   `skills/versions|updates`, `mcp/refresh`, `session/settings/update` OK.
 - `review/state`, `stats/read`, `diagnostics/list`, `tools/list` →
-  `Method not found` on Unified. `session/compact` → not implemented upstream.
+  `Method not found` on Unified; `agents/list` also returns `Method not found`
+  (agent inventory remains available via `runtime/read`). `session/compact` →
+  not implemented upstream.
 - `vibeCode/projects/open` without a Git repo → "Teleport requires a git
   repository". `projectLinks/list` OK session-less.
 - Hosted Work scheduled tasks have no public app-server RPC; the desktop links

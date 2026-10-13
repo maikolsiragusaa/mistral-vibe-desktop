@@ -22,7 +22,8 @@ This is an independent project, unaffiliated with Mistral AI.
   read-only notice and return; parent keeps working.
 - Scheduled loops GUI (create/list/delete/clear) and Cloud panel
   (projectLinks, vibeCode picker, one-way Teleport preflight).
-- Opt-in durable unsent drafts across full restart (localStorage only).
+- Durable unsent drafts across full restart, off by default with explicit
+  opt-in (localStorage only, explicit clear).
 - Streaming Markdown, tool effects, approvals, prompt queue, attachments,
   searchable models, Git diffs/staging/commits/worktrees/PR links, MCP/skills/
   plugins management, context/token diagnostics and delegated browser sign-in.

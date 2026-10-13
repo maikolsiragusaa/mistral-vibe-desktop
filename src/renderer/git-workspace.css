@@ -1146,6 +1146,9 @@
 .git-workspace__worktree-state { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
 .git-workspace__tag--ok { background: rgba(26, 127, 55, 0.14); color: #1a7f37; }
 .git-workspace__wt-create { border: 1px solid var(--border, #e2ddd0); border-radius: 10px; padding: 10px 12px; margin: 10px 0; display: grid; gap: 8px; }
+.git-workspace__worktree-sessions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.git-workspace__session-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; background: rgba(127, 127, 127, 0.12); border-radius: 999px; padding: 2px 4px 2px 8px; }
+.git-workspace__session-chip code { font-size: 10px; }
 .git-workspace__wt-create-row { display: flex; gap: 8px; }
 .git-workspace__wt-create-row input { flex: 1; padding: 6px 9px; border: 1px solid var(--border, #d8d2c4); border-radius: 7px; font-size: 12px; background: var(--surface, #fff); color: inherit; }
 /* M2 files + web preview */

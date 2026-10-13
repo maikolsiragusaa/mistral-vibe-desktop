@@ -2063,6 +2063,9 @@ export function App() {
             >
               <GitWorkspace
                 projectPath={project}
+                onOpenSession={(cwd, sessionId) =>
+                  void protect(() => openSession(cwd, sessionId))
+                }
                 initialPaths={gitBaselines.current.get(project)}
                 agentPaths={operations
                   .filter((entry) => entry.detail?.kind === "file_write")

@@ -104,7 +104,9 @@ export class PreviewWindowService extends EventEmitter {
     const window = this.#ensureWindow();
     this.approvedUrl = url;
     this.showingFallback = false;
-    await window.loadURL(url);
+    // Fire-and-forget: a blocked redirect or dead server must not hang the
+    // IPC call. did-fail-load and navigation guards surface dedicated pages.
+    void window.loadURL(url).catch(() => {});
     return { url };
   }
 
@@ -112,7 +114,7 @@ export class PreviewWindowService extends EventEmitter {
     if (!this.approvedUrl) throw new Error("No local preview is open.");
     const window = this.#ensureWindow();
     this.showingFallback = false;
-    await window.loadURL(this.approvedUrl);
+    void window.loadURL(this.approvedUrl).catch(() => {});
     return { url: this.approvedUrl };
   }
 

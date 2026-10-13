@@ -1032,8 +1032,9 @@ test("real desktop keeps Git, configured models, approvals and sessions grounded
     const gitWorkspace = page.getByRole("region", { name: "Git workspace" });
     await expect(gitWorkspace).toBeVisible();
     // The modular workspace renders every view after the refactor.
+    // (Substring match: the Changes tab carries a live file-count badge.)
     for (const tabName of ["Changes", "Files", "History", "Worktrees", "Pull requests"]) {
-      await expect(gitWorkspace.getByRole("tab", { name: tabName, exact: true })).toBeVisible();
+      await expect(gitWorkspace.getByRole("tab", { name: tabName })).toBeVisible();
     }
     await expect(
       gitWorkspace.getByRole("tab", { name: /Changes/ }),
@@ -1159,6 +1160,8 @@ test("real desktop keeps Git, configured models, approvals and sessions grounded
       path.join(createdPath!, "README.md"),
       "Initial version for the local desktop fixture.\nA UI dirty change.\n",
     );
+    // The manager lists snapshots: refresh to observe the external edit.
+    await gitWorkspace.getByRole("button", { name: "Refresh worktrees", exact: true }).click();
     const createdRow = gitWorkspace
       .locator(".git-workspace__worktree-item")
       .filter({ hasText: "ui-created-branch" });
@@ -1196,13 +1199,28 @@ test("real desktop keeps Git, configured models, approvals and sessions grounded
     const previewPort = (previewServer!.address() as { port: number }).port;
     const previewOrigin = `http://127.0.0.1:${previewPort}`;
     await gitWorkspace.getByLabel("Local preview URL").fill("https://example.com/");
-    await expect(gitWorkspace).toContainText("Only localhost");
+    await expect(gitWorkspace).toContainText("Only http:// loopback origins can be previewed.");
     await gitWorkspace.getByLabel("Local preview URL").fill(`${previewOrigin}/`);
     await gitWorkspace.getByRole("button", { name: "Open preview", exact: true }).click();
     await expect(gitWorkspace).toContainText(`Previewing ${previewOrigin}/`);
-    const isolation = await desktop!.evaluate(({ BrowserWindow }: any) => {
-      const preview = (BrowserWindow.getAllWindows() as any[]).find(
-        (win) => win.getTitle() === "Local preview",
+    // The isolated window commits its first navigation asynchronously.
+    await expect
+      .poll(
+        async () =>
+          desktop!.evaluate(
+            ({ BrowserWindow }: any, origin: string) =>
+              ((BrowserWindow.getAllWindows() as any[]).map(
+                (win) => win.webContents.getURL() as string,
+              ).find((url) => url.startsWith(origin)) as string) || "",
+            previewOrigin,
+          ),
+        { timeout: 15_000 },
+      )
+      .toContain(previewOrigin);
+    const isolation = await desktop!.evaluate(({ BrowserWindow }: any, origin: string) => {
+      // The window title follows the loaded page; identify it by its URL.
+      const preview = (BrowserWindow.getAllWindows() as any[]).find((win) =>
+        (win.webContents.getURL() as string).startsWith(origin),
       );
       if (!preview) return { found: false as const };
       return (async () => ({
@@ -1213,7 +1231,7 @@ test("real desktop keeps Git, configured models, approvals and sessions grounded
           "typeof window.require",
         )) as string,
       }))();
-    });
+    }, previewOrigin);
     expect(isolation.found).toBe(true);
     if (isolation.found) {
       expect(isolation.url.startsWith(previewOrigin)).toBe(true);
@@ -1231,10 +1249,18 @@ test("real desktop keeps Git, configured models, approvals and sessions grounded
       .poll(
         async () =>
           desktop!.evaluate(
-            ({ BrowserWindow }: any) =>
-              ((BrowserWindow.getAllWindows() as any[]).find(
-                (win) => win.getTitle() === "Local preview",
-              )?.webContents.getURL() as string) || "",
+            ({ BrowserWindow }: any, origin: string) => {
+              const wins = (BrowserWindow.getAllWindows() as any[]).map(
+                (win) => win.webContents.getURL() as string,
+              );
+              // The approved window either still shows the loopback page or
+              // the explanatory block page — never the redirect target.
+              const preview = wins.find(
+                (url) => url.startsWith(origin) || url.startsWith("data:text/html"),
+              );
+              return preview || wins.join(" | ");
+            },
+            previewOrigin,
           ),
         { timeout: 15_000 },
       )

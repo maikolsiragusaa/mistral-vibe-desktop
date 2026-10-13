@@ -15,6 +15,8 @@ import { VibeBackendPool } from "./backend-pool.js";
 import { GitWorkspaceService } from "./git-service.js";
 import { BrowserAuthService } from "./browser-auth.js";
 import { PreviewWindowService } from "./preview-window.js";
+import { EditorService } from "./editor-service.js";
+import { Notification } from "electron";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 
@@ -39,6 +41,7 @@ let backend = null;
 let gitWorkspace = null;
 let browserAuth = null;
 let localPreview = null;
+let editorService = null;
 const gitLinks = new Set();
 const authLinks = new Map();
 let quitting = false;
@@ -149,6 +152,28 @@ function installIpc() {
   handle("vibe:connect", () => backend.connect());
   handle("vibe:request", (method, params) => backend.request(method, params));
   handle("vibe:choose-project", () => backend.chooseProject());
+  handle("vibe:choose-worktree-root", () => backend.chooseWorktreeRoot());
+  handle("vibe:choose-editor-path", () => backend.chooseEditorPath());
+  handle("vibe:notify", (notice) => {
+    if (!notice || typeof notice !== "object") throw new TypeError("Invalid notification");
+    const title = typeof notice.title === "string" ? notice.title.slice(0, 120) : "Vibe Desktop";
+    const body = typeof notice.body === "string" ? notice.body.slice(0, 240) : "";
+    if (!Notification.isSupported()) return { shown: false };
+    const notification = new Notification({ title, body, silent: true });
+    notification.on("click", () => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.focus();
+        mainWindow.webContents.send("vibe:notice-click", { sessionId: notice.sessionId ?? null });
+      }
+    });
+    notification.show();
+    return { shown: true };
+  });
+  handle("vibe:editor:detect", () => editorService.detect());
+  handle("vibe:editor:detect-acp", () => editorService.detectAcp());
+  handle("vibe:editor:open", (input) => editorService.open(input ?? {}));
+  handle("vibe:editor:open-terminal", (input) => editorService.openTerminal(input ?? {}));
   handle("vibe:preferences:read", () => backend.readPreferences());
   handle("vibe:preferences:save", (preferences) =>
     backend.savePreferences(preferences),
@@ -168,6 +193,8 @@ function installIpc() {
       "stageHunk",
       "unstageHunk",
       "createWorktree",
+      "previewWorktreePath",
+      "worktreeDiskUsage",
       "removeWorktree",
       "pruneWorktrees",
       "listDirectory",
@@ -409,6 +436,9 @@ async function startApp() {
   browserAuth = new BrowserAuthService({
     app,
     openExternal: (url) => shell.openExternal(url),
+  });
+  editorService = new EditorService({
+    authorizeProjectRoot: (cwd) => backend.authorizeProjectRoot(cwd),
   });
   localPreview = new PreviewWindowService({
     createWindow: (options) => new BrowserWindow(options),

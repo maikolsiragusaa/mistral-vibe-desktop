@@ -59,6 +59,7 @@ export function CloudPanel({
   const [isGitRepo, setIsGitRepo] = useState<boolean | null>(null);
   const [branch, setBranch] = useState<string | null>(null);
   const [pickerState, setPickerState] = useState<"idle" | "opened" | "failed">("idle");
+  const [sessionCopied, setSessionCopied] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!bridge) return;
@@ -121,12 +122,24 @@ export function CloudPanel({
       setPickerState("opened");
       setNotice(
         purpose === "teleport"
-          ? "Teleport picker opened by Vibe — choose the cloud project in the session flow. The transfer itself completes in Vibe Code Web; this panel cannot confirm it."
+          ? "Teleport picker opened by Vibe (step 2 of 5). Choose the cloud project in the session flow. Steps 3–5 complete in Vibe Code Web under Mistral custody; this panel cannot confirm the transfer."
           : "Cloud picker opened by Vibe. Project selection continues in the session flow.",
       );
     } catch (e) {
       setPickerState("failed");
       setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const openCodeWeb = () =>
+    void bridge?.openExternal("https://mistral.ai/products/vibe").catch(() => {});
+  const copySessionId = async () => {
+    if (!sessionId) return;
+    try {
+      await navigator.clipboard.writeText(sessionId);
+      setSessionCopied(true);
+    } catch {
+      setError("Could not copy the session id.");
     }
   };
 
@@ -233,12 +246,49 @@ export function CloudPanel({
             verified by Mistral at transfer time
           </li>
         </ul>
+        <h3>Transfer lifecycle (honest)</h3>
+        <ol className="teleport-lifecycle">
+          <li>
+            <strong>1 · Local preflight</strong> —{" "}
+            {preflight.overall === "incompatible"
+              ? "blocked (see incompatible check above)"
+              : preflight.overall === "verified"
+                ? "verified locally"
+                : "partially verifiable; Mistral decides the rest"}
+          </li>
+          <li>
+            <strong>2 · Official picker</strong> —{" "}
+            {pickerState === "opened"
+              ? "opened by Vibe (this panel only proves the picker opened)"
+              : pickerState === "failed"
+                ? "last open failed (see error)"
+                : "not opened yet"}
+          </li>
+          <li>
+            <strong>3 · Transfer requested</strong> — confirmed only in Vibe Code Web, never here
+          </li>
+          <li>
+            <strong>4 · Transfer confirmed</strong> — confirmed only in Vibe Code Web; the local session is not converted into a cloud session
+          </li>
+          <li>
+            <strong>5 · Beyond client visibility</strong> — sandbox lifetime, GitHub persistence and resume limits are Mistral-owned; no local sync is promised
+          </li>
+        </ol>
         <p>
           Teleport is <strong>one-way</strong>. The cloud continues on Mistral
-          Medium 3.5 for up to 24h (3h idle timeout, 30s per command). You cannot
-          pull it back locally; continue from Vibe Code Web.
+          Medium 3.5 for up to 24h (3h idle timeout, 30s per command). Local files
+          that were never pushed to the authorized GitHub repository do not move
+          automatically; local secrets never move. You cannot pull it back locally;
+          continue from Vibe Code Web.
           {pickerState === "opened" &&
             " Picker opened — completion is confirmed in Vibe Code Web, not here."}
+        </p>
+        <p>
+          <small>
+            Needs: Mistral sign-in, an eligible Git repository, a Mistral-model session,
+            and the Mistral GitHub App on that repository. Plan tier and App state are
+            verified by Mistral at transfer time — the desktop never guesses them.
+          </small>
         </p>
         <div className="button-row">
           <button
@@ -263,6 +313,14 @@ export function CloudPanel({
           >
             Teleport docs <ArrowUpRight size={13} />
           </button>
+          <button className="secondary" onClick={openCodeWeb}>
+            Open Vibe Code Web <ArrowUpRight size={13} />
+          </button>
+          {sessionId && (
+            <button className="secondary" onClick={() => void copySessionId()}>
+              {sessionCopied ? "Session id copied" : "Copy session id"}
+            </button>
+          )}
         </div>
       </section>
     </section>

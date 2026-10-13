@@ -94,6 +94,13 @@ import type {
   Status,
 } from "./types";
 import { reduceEvent } from "./projection.ts";
+import {
+  connectionLimitExplanation,
+  describeSessionTab,
+  emptyTabUiState,
+  type TabUiState,
+} from "./session-tabs";
+import { NoticeDeduper, buildNotice } from "./notifications";
 
 const bridge = window.vibe;
 const GitWorkspace = lazy(() =>
@@ -137,6 +144,8 @@ export function App() {
     recentProjects: [],
   });
   const [project, setProject] = useState("");
+  const projectRef = useRef("");
+  projectRef.current = project;
   const [sessions, setSessions] = useState<Session[]>([]);
   const [showArchived, setShowArchived] = useState(false);
   const includeArchived = useRef(false);
@@ -144,6 +153,11 @@ export function App() {
   const sessionCache = useRef(new Map<string, SessionState>());
   const sessionDrafts = useRef(new Map<string, string>());
   const promptHistory = useRef(new Map<string, string[]>());
+  const tabUi = useRef(new Map<string, TabUiState>());
+  const noticeDeduper = useRef(new NoticeDeduper());
+  const preferencesRef = useRef(preferences);
+  preferencesRef.current = preferences;
+  const openSessionRef = useRef<((cwd: string, sessionId?: string) => Promise<void>) | null>(null);
   const [sessionQuery, setSessionQuery] = useState("");
   const [view, setView] = useState<"chat" | "git">("chat");
   const [area, setArea] = useState<"code" | "work">("code");
@@ -537,8 +551,16 @@ export function App() {
         );
         return;
       }
+      const notificationsOn = preferencesRef.current.notificationsEnabled !== false;
+      const maybeNotify = (kind: "task-done" | "loop-failed" | "approval-waiting" | "backend-error" | "result-available", sessionId: string | null | undefined) => {
+        if (!notificationsOn || !sessionId || !bridge?.notify) return;
+        const notice = buildNotice(kind, sessionId);
+        if (!noticeDeduper.current.shouldShow(notice)) return;
+        void bridge.notify(notice).catch(() => {});
+      };
       if (event.method === "callback/call") {
         const callback = event.params.callback;
+        maybeNotify("approval-waiting", callback.sessionId);
         if (callback.sessionId !== stateRef.current?.session.id) {
           const cached = sessionCache.current.get(callback.sessionId);
           if (cached)
@@ -566,7 +588,15 @@ export function App() {
             event.params.message ||
             "Vibe reported an error.",
         );
+        maybeNotify("backend-error", event.params.sessionId);
         return;
+      }
+      if (event.method === "turn/failed") {
+        maybeNotify("loop-failed", event.params.sessionId);
+      }
+      if (event.method === "turn/completed") {
+        const sid = event.params.sessionId || event.params.state?.session?.id;
+        if (sid && sid !== stateRef.current?.session.id) maybeNotify("task-done", sid);
       }
       const eventSessionId =
         event.params.sessionId || event.params.state?.session?.id;
@@ -641,9 +671,18 @@ export function App() {
       setStatus({ state: "error", message: e.message });
       setError(e.message);
     });
+    const offNotice = bridge.onNoticeClick?.((payload) => {
+      const sid = payload?.sessionId;
+      if (typeof sid === "string" && sessionCache.current.has(sid)) {
+        const cached = sessionCache.current.get(sid);
+        const opener = openSessionRef.current;
+        if (opener) void protect(() => opener(cached?.session.cwd || projectRef.current, sid));
+      }
+    }) ?? (() => {});
     return () => {
       offStatus();
       offEvents();
+      offNotice();
     };
   }, [adopt, listSessions, reload]);
 
@@ -825,6 +864,17 @@ export function App() {
       sessionDrafts.current.set(stateRef.current.session.id, draft);
       attachmentDrafts.current.set(stateRef.current.session.id, attachments);
       if (durableDrafts) saveDurableDrafts(sessionDrafts.current);
+      // M3: preserve per-tab visual context (scroll, inspector, worktree).
+      // History itself stays with Vibe; only the view state is cached.
+      tabUi.current.set(stateRef.current.session.id, {
+        scrollTop: transcript.current?.scrollTop ?? 0,
+        inspector: panel,
+        openFile: null,
+        showStagedDiff: false,
+        draft,
+        worktreePath: stateRef.current.session.cwd ?? null,
+      });
+      noticeDeduper.current.clearSession(stateRef.current.session.id);
     }
     setProject(cwd);
     setView("chat");
@@ -882,9 +932,17 @@ export function App() {
     setDraft(
       sessionDrafts.current.get(result.state.session.id) ||
         sessionDrafts.current.get(`project:${cwd}`) ||
+        tabUi.current.get(result.state.session.id)?.draft ||
         "",
     );
+    const savedUi = tabUi.current.get(result.state.session.id);
+    if (savedUi?.inspector) setPanel(savedUi.inspector as "activity" | "changes" | "environment");
     setAttachments(attachmentDrafts.current.get(result.state.session.id) || []);
+    // Restore scroll after the transcript renders.
+    requestAnimationFrame(() => {
+      if (transcript.current && savedUi) transcript.current.scrollTop = savedUi.scrollTop;
+      else transcript.current?.scrollTo?.(0, 0);
+    });
     await refreshRuntime(result.state.session.id);
     await listSessions();
     request<any>("workspace/git/worktrees/list", { cwd, includeDetails: true })
@@ -892,6 +950,7 @@ export function App() {
       .catch(() => setWorktrees([]));
     composer.current?.focus();
   };
+  openSessionRef.current = openSession;
   const chooseProject = () =>
     protect(async () => {
       if (!bridge) throw new Error("Launch the desktop app to open a folder.");
@@ -1837,16 +1896,34 @@ export function App() {
       <main className="workspace" data-session-id={state?.session.id}>
         {sessionCache.current.size > 0 && (
           <nav className="session-tabs" aria-label="Open sessions">
-            {[...sessionCache.current.values()].map((cached) => (
+            {[...sessionCache.current.values()].map((cached) => {
+              const tab = describeSessionTab({
+                id: cached.session.id,
+                title: cached.session.title,
+                cwd: cached.session.cwd,
+                branch: null,
+                model: cached.session.model ?? runtime?.config.activeModel.alias ?? null,
+                hasActiveTurn: cached.turns?.at(-1)?.status === "in_progress",
+                hasPendingCallbacks: cached.activeCallbacks.length > 0,
+                attached: true,
+                leaseHeld: Boolean(cached.session.leaseHolder),
+                terminated: false,
+                childRunning: (cached.childSessions ?? []).filter((c) => c.status.type !== "idle").length,
+                childWaiting: 0,
+                detached: false,
+                draftLength: (sessionDrafts.current.get(cached.session.id) ?? "").length,
+              });
+              return (
               <div
                 className={
                   cached.session.id === state?.session.id ? "active" : ""
                 }
                 key={cached.session.id}
+                data-tab-state={tab.state}
               >
                 <button
-                  title={cached.session.title || "New session"}
-                  aria-label={`Switch to session ${cached.session.title || cached.session.id}`}
+                  title={tab.tooltip}
+                  aria-label={`Switch to session ${tab.title} (${tab.state})`}
                   disabled={working}
                   onClick={() =>
                     void protect(() =>
@@ -1860,7 +1937,20 @@ export function App() {
                   <span
                     className={`status-dot ${cached.turns?.at(-1)?.status === "in_progress" ? "working" : cached.activeCallbacks.length ? "error" : "ready"}`}
                   />
-                  <span>{cached.session.title || "New session"}</span>
+                  <span>{tab.title}</span>
+                  {tab.shortCwd && <small className="tab-cwd">{tab.shortCwd}</small>}
+                  {tab.model && <small className="tab-model">{tab.model}</small>}
+                  {(cached.childSessions ?? []).length > 0 && (
+                    <small className="tab-agents" title={`${(cached.childSessions ?? []).length} subagent(s)`}>
+                      ×{(cached.childSessions ?? []).length}
+                    </small>
+                  )}
+                  {cached.activeCallbacks.length > 0 && (
+                    <small className="tab-badge" title="Waits for approval">approval</small>
+                  )}
+                  {cached.session.leaseHolder && (
+                    <small className="tab-badge" title="Held by another client — read-only here">external</small>
+                  )}
                 </button>
                 <button
                   aria-label={`Close session ${cached.session.title || "New session"} (keeps session running)`}
@@ -1907,8 +1997,14 @@ export function App() {
                   <X size={12} />
                 </button>
               </div>
-            ))}
+              );
+            })}
           </nav>
+        )}
+        {sessionCache.current.size >= 4 && (
+          <p className="notice-text" role="status" title={connectionLimitExplanation(sessionCache.current.size, 4)}>
+            {connectionLimitExplanation(sessionCache.current.size, 4)}
+          </p>
         )}
         {authLinks.length > 0 && (
           <div className="notice auth-notice" role="status">
@@ -3412,6 +3508,25 @@ export function App() {
                     </small>
                   </span>
                 </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={preferences.notificationsEnabled !== false}
+                    onChange={(event) =>
+                      void savePreferences({
+                        ...preferences,
+                        notificationsEnabled: event.target.checked,
+                      })
+                    }
+                  />
+                  <span>
+                    Desktop notifications
+                    <small>
+                      Task done, loop failed, approval waiting and backend errors — while the app runs only.
+                      No sensitive content; click opens the owning session. Never promises delivery with the app closed.
+                    </small>
+                  </span>
+                </label>
                 <div className="button-row">
                   <button
                     className="secondary"
@@ -3425,6 +3540,49 @@ export function App() {
                   </button>
                 </div>
               </div>
+            </section>
+            <section>
+              <h3>Editor handoff</h3>
+              <p>
+                <small>
+                  Open repository folders and files in your editor. This reuses files on disk only —
+                  it never attaches the editor to the agent session. For agentic editing, configure the
+                  official <code>vibe-acp</code> in that editor.
+                </small>
+              </p>
+              <div className="button-row">
+                <button
+                  className="secondary"
+                  onClick={() =>
+                    void protect(async () => {
+                      if (!bridge?.chooseEditorPath) throw new Error("Editor picker unavailable.");
+                      const picked = await bridge.chooseEditorPath();
+                      if (!picked) return;
+                      await savePreferences({ ...preferences, customEditorPath: picked });
+                      setNotice(`Custom editor set: ${picked}`);
+                    })
+                  }
+                >
+                  Choose custom editor…
+                </button>
+                {preferences.customEditorPath && (
+                  <button
+                    className="secondary"
+                    onClick={() => void savePreferences({ ...preferences, customEditorPath: null })}
+                  >
+                    Clear custom editor
+                  </button>
+                )}
+                <button
+                  className="text-button"
+                  onClick={() => void bridge?.openExternal("https://docs.mistral.ai/vibe/code/vs-code-extension/install-authenticate")}
+                >
+                  Editor setup docs <ArrowUpRight size={13} />
+                </button>
+              </div>
+              {preferences.customEditorPath && (
+                <p role="status"><small>Custom editor: <code>{preferences.customEditorPath}</code></small></p>
+              )}
             </section>
             <section className="about">
               <Mark />

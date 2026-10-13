@@ -9,6 +9,13 @@ import {
 import { shortHash } from "../git-api";
 import type { GitStatus, GitWorktree } from "../git-types";
 
+export interface WorktreeDiskRow {
+  path: string;
+  branch?: string | null;
+  bytes: number | null;
+  files: number | null;
+}
+
 export interface WorktreesPanelProps {
   worktrees: GitWorktree[] | null;
   loadingTab: boolean;
@@ -25,6 +32,15 @@ export interface WorktreesPanelProps {
   onRemove: (worktreePath: string) => void;
   onCopyPath: (worktreePath: string) => void;
   onOpenSession?: (cwd: string, sessionId: string) => void;
+  /** M3: user-chosen parent dir (null = managed space). */
+  customRoot?: string | null;
+  rootKind?: "managed" | "custom";
+  previewPath?: string | null;
+  diskRows?: WorktreeDiskRow[] | null;
+  onChooseCustomRoot?: () => void;
+  onClearCustomRoot?: () => void;
+  onOpenInEditor?: (folder: string) => void;
+  onOpenTerminal?: (folder: string) => void;
 }
 
 function samePath(a: string, b: string): boolean {
@@ -54,6 +70,14 @@ export function WorktreesPanel({
   onRemove,
   onCopyPath,
   onOpenSession,
+  customRoot = null,
+  rootKind = "managed",
+  previewPath = null,
+  diskRows = null,
+  onChooseCustomRoot,
+  onClearCustomRoot,
+  onOpenInEditor,
+  onOpenTerminal,
 }: WorktreesPanelProps) {
   return (
     <section className="git-workspace__list-view" aria-label="Git worktrees">
@@ -98,6 +122,37 @@ export function WorktreesPanel({
         never force-deleted. Open a worktree via Open project to authorize it
         as an independent workspace.
       </p>
+      {(onChooseCustomRoot || onClearCustomRoot) && (
+        <div className="git-workspace__wt-location" role="group" aria-label="Worktree location">
+          <small>
+            Location: {rootKind === "custom" && customRoot ? `custom — ${customRoot}` : "app-managed space"}
+          </small>
+          <span className="git-workspace__file-actions">
+            {onChooseCustomRoot && (
+              <button
+                type="button"
+                className="git-workspace__mini-button"
+                onClick={onChooseCustomRoot}
+                disabled={working}
+                title="Choose a custom parent folder for new worktrees (authorized via folder picker)"
+              >
+                Choose folder…
+              </button>
+            )}
+            {rootKind === "custom" && onClearCustomRoot && (
+              <button
+                type="button"
+                className="git-workspace__mini-button"
+                onClick={onClearCustomRoot}
+                disabled={working}
+                title="Return to the app-managed worktree space"
+              >
+                Use managed space
+              </button>
+            )}
+          </span>
+        </div>
+      )}
       {showWtDialog && (
         <form className="git-workspace__wt-create" onSubmit={onCreate}>
           <label htmlFor="git-wt-branch">New branch worktree</label>
@@ -129,10 +184,16 @@ export function WorktreesPanel({
             </button>
           </div>
           <small>
-            Created in the app-managed worktree space outside this checkout, so
-            the main repository never becomes dirty from it. Your session stays
-            where it is; sessions are never moved automatically.
+            {rootKind === "custom" && customRoot
+              ? `Checkout will be created under the chosen folder (outside this repository). Existing checkouts stay where they are; nothing is migrated or deleted.`
+              : `Created in the app-managed worktree space outside this checkout, so the main repository never becomes dirty from it.`}{" "}
+            Your session stays where it is; sessions are never moved automatically.
           </small>
+          {previewPath && (
+            <small title={previewPath}>
+              Final path preview: <code>{previewPath}</code>
+            </small>
+          )}
         </form>
       )}
       {loadingTab && (
@@ -234,6 +295,16 @@ export function WorktreesPanel({
               {tree.prunable && (
                 <span className="git-workspace__tag git-workspace__tag--warn">Prunable</span>
               )}
+              {diskRows && (
+                <small className="git-workspace__limit-note">
+                  {(() => {
+                    const row = diskRows.find((r) => r.path === tree.path);
+                    if (!row || row.bytes == null) return "size unknown";
+                    if (row.bytes < 1024 * 1024) return `${(row.bytes / 1024).toFixed(1)} KiB · ${row.files ?? "?"} files`;
+                    return `${(row.bytes / 1024 / 1024).toFixed(1)} MiB · ${row.files ?? "?"} files`;
+                  })()}
+                </small>
+              )}
               <span className="git-workspace__file-actions">
                 <button
                   type="button"
@@ -243,6 +314,26 @@ export function WorktreesPanel({
                 >
                   Copy path
                 </button>
+                {onOpenInEditor && (
+                  <button
+                    type="button"
+                    className="git-workspace__mini-button"
+                    onClick={() => onOpenInEditor(tree.path)}
+                    title="Open this checkout folder in the configured editor (files only — not the agent session)"
+                  >
+                    Open in editor
+                  </button>
+                )}
+                {onOpenTerminal && (
+                  <button
+                    type="button"
+                    className="git-workspace__mini-button"
+                    onClick={() => onOpenTerminal(tree.path)}
+                    title="Open a Windows terminal in this checkout folder"
+                  >
+                    Terminal
+                  </button>
+                )}
                 {!isCurrent && !tree.bare && (
                   <button
                     type="button"

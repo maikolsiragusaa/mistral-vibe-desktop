@@ -15,6 +15,14 @@ contextBridge.exposeInMainWorld(
     request: (method, params = {}) =>
       ipcRenderer.invoke("vibe:request", method, params),
     chooseProject: () => ipcRenderer.invoke("vibe:choose-project"),
+    chooseWorktreeRoot: () => ipcRenderer.invoke("vibe:choose-worktree-root"),
+    chooseEditorPath: () => ipcRenderer.invoke("vibe:choose-editor-path"),
+    notify: (notice) => ipcRenderer.invoke("vibe:notify", notice),
+    onNoticeClick: (listener) => subscribe("vibe:notice-click", listener),
+    editorDetect: () => ipcRenderer.invoke("vibe:editor:detect"),
+    editorDetectAcp: () => ipcRenderer.invoke("vibe:editor:detect-acp"),
+    editorOpen: (input) => ipcRenderer.invoke("vibe:editor:open", input),
+    editorOpenTerminal: (input) => ipcRenderer.invoke("vibe:editor:open-terminal", input),
     readPreferences: () => ipcRenderer.invoke("vibe:preferences:read"),
     savePreferences: (preferences) =>
       ipcRenderer.invoke("vibe:preferences:save", preferences),

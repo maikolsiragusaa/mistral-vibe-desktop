@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.0-M3 — Multi-session workspace, cloud honesty, automations & editor handoff (unreleased baseline 0.3.0)
+
+M3 on frozen Unified 2.26.1, no merge/release. Capability matrix in
+`docs/m3-capability-matrix.md`; Task-Scheduler ADR; delivery in `docs/m3-delivery.md`.
+
+- Sessions: enriched tabs (state/worktree/model/agents/approval/detached/external),
+  4-slot viewable-vs-attached explanation, per-tab scroll/inspector/draft
+  preservation, canonical-cwd worktree binding, lease-aware read-only subagents.
+- Worktrees: dialog-authorized custom parents (UNC/symlink/junction/perms/
+  collision/repo-identity/branch/non-empty/nesting checked), final-path preview,
+  per-repo preference, measured disk view, no migration/cleanup; editor/terminal
+  handoff per checkout.
+- Cloud: 5-step Teleport lifecycle honesty, linked projects, official picker only,
+  Vibe Code Web + docs links, GitHub-App/plan delegation, no fake remote sessions.
+- Loops: explicit create-then-delete replace, last-run when exposed, owner labels,
+  deduped app-open-only toasts with click-to-session; Work Tasks stay hosted-only.
+- Editors: VS Code/Insiders/VSCodium/Cursor detection + custom exe, structured
+  launches on authorized roots, `vibe-acp` presence check, filesystem-only honesty.
+- Suite: 146 tests (120 kept), tsc/build/audit green. Electron/packaging/CI +
+  fresh screenshots remain the pending acceptance gate (declared, not claimed).
+
 ## 0.3.0-M2.1 — Stabilization, worktree architecture & Windows validation (unreleased baseline 0.3.0)
 
 Red-CI-driven hardening of M2 (`a1a2fbd` broke both Windows Actions on the

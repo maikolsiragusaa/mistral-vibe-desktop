@@ -71,6 +71,11 @@ export function GitWorkspace({
   const [prDetailsLoading, setPrDetailsLoading] = useState(false);
   const [wtBranch, setWtBranch] = useState("");
   const [showWtDialog, setShowWtDialog] = useState(false);
+  const [customRoot, setCustomRoot] = useState<string | null>(null);
+  const [previewTarget, setPreviewTarget] = useState<string | null>(null);
+  const [diskRows, setDiskRows] = useState<{ path: string; branch?: string | null; bytes: number | null; files: number | null }[] | null>(null);
+  const [editors, setEditors] = useState<{ id: string; label: string; exePath: string | null; verified: boolean }[]>([]);
+  const [customEditorPath, setCustomEditorPath] = useState<string | null>(null);
   const [treeCache, setTreeCache] = useState<Map<string, DirEntry[]>>(new Map());
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set([""]));
   const [treeLoading, setTreeLoading] = useState(false);
@@ -224,8 +229,17 @@ export function GitWorkspace({
     setCreatedPrUrl(null);
     setError("");
     setNotice("");
+    setCustomRoot(null);
+    setPreviewTarget(null);
+    setDiskRows(null);
     setLoadingStatus(true);
     void loadStatus(true, generation);
+    void window.vibe?.readPreferences().then((prefs) => {
+      const saved = prefs?.worktreeRoots?.[projectPath] ?? null;
+      if (typeof saved === "string" && saved) setCustomRoot(saved);
+      if (typeof prefs?.customEditorPath === "string") setCustomEditorPath(prefs.customEditorPath);
+    }).catch(() => {});
+    void window.vibe?.editorDetect().then(setEditors).catch(() => {});
     return () => {
       projectGeneration.current += 1;
     };
@@ -299,10 +313,37 @@ export function GitWorkspace({
       })
       .catch((reason) => active && reportError(errorMessage(reason)))
       .finally(() => active && setLoadingTab(false));
+    void gitRequest<{ rows: { path: string; branch?: string | null; bytes: number | null; files: number | null }[] }>("worktreeDiskUsage", { projectPath })
+      .then((result) => {
+        if (active) setDiskRows(result.rows ?? []);
+      })
+      .catch(() => {});
     return () => {
       active = false;
     };
   }, [projectPath, reportError, tab, worktreeRevision]);
+
+  useEffect(() => {
+    if (!showWtDialog || !wtBranch.trim()) {
+      setPreviewTarget(null);
+      return;
+    }
+    let active = true;
+    void gitRequest<{ target: string }>("previewWorktreePath", {
+      projectPath,
+      branch: wtBranch.trim(),
+      ...(customRoot ? { customRoot } : {}),
+    })
+      .then((result) => {
+        if (active) setPreviewTarget(result.target ?? null);
+      })
+      .catch(() => {
+        if (active) setPreviewTarget(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [showWtDialog, wtBranch, customRoot, projectPath]);
 
   useEffect(() => {
     if (tab !== "pull-requests") return;
@@ -592,6 +633,83 @@ export function GitWorkspace({
 
   const refreshWorktrees = () => setWorktreeRevision((revision) => revision + 1);
 
+  const chooseCustomRoot = async () => {
+    if (!window.vibe?.chooseWorktreeRoot) {
+      reportError("The folder picker is unavailable.");
+      return;
+    }
+    try {
+      const picked = await window.vibe.chooseWorktreeRoot();
+      if (!picked) return;
+      setCustomRoot(picked);
+      try {
+        const prefs = await window.vibe.readPreferences();
+        await window.vibe.savePreferences({
+          ...prefs,
+          worktreeRoots: { ...(prefs.worktreeRoots ?? {}), [projectPath]: picked },
+        });
+      } catch {
+        // Preference persistence is best-effort; the chosen folder still applies this run.
+      }
+      setNotice(`Custom worktree folder selected: ${picked}. Existing checkouts stay where they are.`);
+    } catch (reason) {
+      reportError(errorMessage(reason));
+    }
+  };
+
+  const clearCustomRoot = async () => {
+    setCustomRoot(null);
+    setPreviewTarget(null);
+    try {
+      const prefs = await window.vibe?.readPreferences();
+      if (prefs) {
+        const next = { ...(prefs.worktreeRoots ?? {}) };
+        delete next[projectPath];
+        await window.vibe?.savePreferences({ ...prefs, worktreeRoots: next });
+      }
+    } catch {
+      /* best-effort */
+    }
+  };
+
+  const openInEditor = async (folder: string, file?: string | null, line?: number | null) => {
+    if (!window.vibe?.editorOpen) {
+      reportError("The editor bridge is unavailable.");
+      return;
+    }
+    try {
+      const list = editors.length ? editors : await window.vibe.editorDetect().catch(() => []);
+      const verified = list.find((e) => e.verified) ?? null;
+      const exe = customEditorPath ?? verified?.exePath ?? null;
+      if (!exe && !verified) {
+        reportError("No supported editor was found. Install VS Code, Cursor or VSCodium, or configure a custom editor path.");
+        return;
+      }
+      await window.vibe.editorOpen({
+        editorExe: customEditorPath,
+        editorId: customEditorPath ? null : (verified?.id ?? null),
+        folder,
+        file: file ?? null,
+        line: line ?? null,
+      });
+      setNotice("Workspace opened in the editor (files only — the agent session stays here).");
+    } catch (reason) {
+      reportError(errorMessage(reason));
+    }
+  };
+
+  const openTerminalHere = async (folder: string) => {
+    if (!window.vibe?.editorOpenTerminal) {
+      reportError("The terminal bridge is unavailable.");
+      return;
+    }
+    try {
+      await window.vibe.editorOpenTerminal({ folder });
+    } catch (reason) {
+      reportError(errorMessage(reason));
+    }
+  };
+
   const createWorktree = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!wtBranch.trim()) return;
@@ -602,16 +720,24 @@ export function GitWorkspace({
       const result = await gitRequest<{ items: GitWorktree[] }>("createWorktree", {
         projectPath,
         branch: wtBranch.trim(),
+        ...(customRoot ? { customRoot } : {}),
       });
       setWorktrees(result.items ?? []);
       const created = (result.items ?? []).find((entry) => entry.branch === wtBranch.trim());
       setWtBranch("");
       setShowWtDialog(false);
+      setPreviewTarget(null);
       setNotice(
         created
-          ? `Worktree created at ${created.path} in the app-managed space. Select its folder via Open project to work in it.`
-          : "Worktree created in the app-managed space. Select its folder via Open project to work in it.",
+          ? `Worktree created at ${created.path} ${customRoot ? "under the chosen folder" : "in the app-managed space"}. Select its folder via Open project to work in it.`
+          : `Worktree created ${customRoot ? "under the chosen folder" : "in the app-managed space"}. Select its folder via Open project to work in it.`,
       );
+      try {
+        const usage = await gitRequest<{ rows: { path: string; branch?: string | null; bytes: number | null; files: number | null }[] }>("worktreeDiskUsage", { projectPath });
+        setDiskRows(usage.rows ?? []);
+      } catch {
+        /* disk view is best-effort */
+      }
     } catch (reason) {
       reportError(errorMessage(reason));
     } finally {
@@ -973,6 +1099,8 @@ export function GitWorkspace({
                 onPreviewClose={closePreview}
                 onOpenExternal={(url) => void openExternal(url)}
                 renderTreeRows={renderTreeRows}
+                onOpenInEditor={(file) => void openInEditor(projectPath, file)}
+                onOpenTerminal={() => void openTerminalHere(projectPath)}
               />
             )}
 
@@ -1004,6 +1132,14 @@ export function GitWorkspace({
                 onRemove={(worktreePath) => void removeWorktree(worktreePath)}
                 onCopyPath={(worktreePath) => void copyWorktreePath(worktreePath)}
                 onOpenSession={onOpenSession}
+                customRoot={customRoot}
+                rootKind={customRoot ? "custom" : "managed"}
+                previewPath={previewTarget}
+                diskRows={diskRows}
+                onChooseCustomRoot={() => void chooseCustomRoot()}
+                onClearCustomRoot={() => void clearCustomRoot()}
+                onOpenInEditor={(folder) => void openInEditor(folder)}
+                onOpenTerminal={(folder) => void openTerminalHere(folder)}
               />
             )}
 

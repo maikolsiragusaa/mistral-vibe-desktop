@@ -5,6 +5,12 @@ export interface Preferences {
   recentProjects: string[];
   mascot?: boolean;
   motion?: boolean;
+  /** M3: per-repository custom worktree parent dirs (repo canonical path → parent). */
+  worktreeRoots?: Record<string, string>;
+  /** M3: user-configured editor executable (absolute), or null when unset. */
+  customEditorPath?: string | null;
+  /** M3: desktop toast preference (default on when unset). */
+  notificationsEnabled?: boolean;
 }
 export interface Status {
   state: "connecting" | "ready" | "disconnected" | "error";
@@ -139,6 +145,14 @@ export interface VibeBridge {
     params?: Record<string, unknown>,
   ): Promise<T>;
   chooseProject(): Promise<string | null>;
+  chooseWorktreeRoot(): Promise<string | null>;
+  chooseEditorPath(): Promise<string | null>;
+  notify(notice: { title: string; body: string; sessionId?: string | null }): Promise<{ shown: boolean }>;
+  onNoticeClick(listener: (payload: { sessionId?: string | null }) => void): () => void;
+  editorDetect(): Promise<{ id: string; label: string; exePath: string | null; verified: boolean }[]>;
+  editorDetectAcp(): Promise<{ found: boolean; exePath: string | null }>;
+  editorOpen(input: { editorExe?: string | null; editorId?: string | null; folder: string; file?: string | null; line?: number | null }): Promise<{ exePath: string; argv: string[] }>;
+  editorOpenTerminal(input: { folder: string }): Promise<{ exePath: string; argv: string[] }>;
   readPreferences(): Promise<Preferences>;
   savePreferences(preferences: Preferences): Promise<Preferences>;
   onEvent(listener: (event: RpcEvent) => void): () => void;

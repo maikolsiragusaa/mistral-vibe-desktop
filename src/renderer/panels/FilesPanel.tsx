@@ -37,6 +37,8 @@ export interface FilesPanelProps {
   onPreviewClose: () => void;
   onOpenExternal: (url: string) => void;
   renderTreeRows: (dir: string, depth: number, rows: ReactNode[], seen: Set<string>) => ReactNode[];
+  onOpenInEditor?: (file: string | null) => void;
+  onOpenTerminal?: () => void;
 }
 
 export function FilesPanel({
@@ -59,6 +61,8 @@ export function FilesPanel({
   onPreviewClose,
   onOpenExternal,
   renderTreeRows,
+  onOpenInEditor,
+  onOpenTerminal,
 }: FilesPanelProps) {
   const webProblem = webUrl.trim() ? previewUrlProblem(webUrl) : null;
   return (
@@ -68,15 +72,41 @@ export function FilesPanel({
           <span className="git-workspace__eyebrow">REPOSITORY</span>
           <h2>Files</h2>
         </div>
-        <button
-          type="button"
-          className="git-workspace__icon-button"
-          onClick={onReloadTree}
-          disabled={treeLoading}
-          aria-label="Reload file tree"
-        >
-          <RefreshCw size={15} />
-        </button>
+        <span className="git-workspace__heading-actions">
+          {(onOpenInEditor || onOpenTerminal) && (
+            <>
+              {onOpenInEditor && (
+                <button
+                  type="button"
+                  className="git-workspace__button git-workspace__button--quiet"
+                  onClick={() => onOpenInEditor(null)}
+                  title="Open this repository folder in the configured editor (files only — not the agent session)"
+                >
+                  Open folder in editor
+                </button>
+              )}
+              {onOpenTerminal && (
+                <button
+                  type="button"
+                  className="git-workspace__button git-workspace__button--quiet"
+                  onClick={onOpenTerminal}
+                  title="Open a Windows terminal in this repository folder"
+                >
+                  Terminal
+                </button>
+              )}
+            </>
+          )}
+          <button
+            type="button"
+            className="git-workspace__icon-button"
+            onClick={onReloadTree}
+            disabled={treeLoading}
+            aria-label="Reload file tree"
+          >
+            <RefreshCw size={15} />
+          </button>
+        </span>
       </div>
       <p className="git-workspace__view-note">
         Read-only inspector: previews never grant local files any app
@@ -174,6 +204,16 @@ export function FilesPanel({
           ) : preview.kind === "markdown" && preview.text != null ? (
             <>
               <p className="git-workspace__group-heading">{preview.path}</p>
+              {onOpenInEditor && (
+                <button
+                  type="button"
+                  className="git-workspace__mini-button"
+                  onClick={() => onOpenInEditor(preview.path)}
+                  title="Open this file in the configured editor"
+                >
+                  Open file in editor
+                </button>
+              )}
               <ReactMarkdown>{preview.text}</ReactMarkdown>
             </>
           ) : (
@@ -183,6 +223,16 @@ export function FilesPanel({
                 {preview.kind === "json" ? " · JSON" : ""}
                 {preview.truncated ? ` · first ${(preview.maxBytes ?? 0).toLocaleString()} bytes` : ""}
               </p>
+              {onOpenInEditor && preview.kind !== "binary" && preview.kind !== "too-large" && (
+                <button
+                  type="button"
+                  className="git-workspace__mini-button"
+                  onClick={() => onOpenInEditor(preview.path)}
+                  title="Open this file in the configured editor"
+                >
+                  Open file in editor
+                </button>
+              )}
               <pre>
                 <code>{preview.text}</code>
               </pre>

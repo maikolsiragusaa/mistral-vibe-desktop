@@ -899,15 +899,50 @@ export class VibeBackend extends EventEmitter {
     return canonical;
   }
 
+  async chooseWorktreeRoot() {
+    await this.#loadPreferences();
+    const window = this.getWindow();
+    const options = { properties: ["openDirectory", "createDirectory"] };
+    const result = window
+      ? await this.dialog.showOpenDialog(window, options)
+      : await this.dialog.showOpenDialog(options);
+    if (result.canceled || !result.filePaths?.[0]) return null;
+    // Dialog selection is the authorization gesture for a custom worktree
+    // parent. Canonicalize but do not require it to be a project root.
+    return this.#canonicalDirectory(result.filePaths[0]);
+  }
+
+  async chooseEditorPath() {
+    await this.#loadPreferences();
+    const window = this.getWindow();
+    const options = {
+      properties: ["openFile"],
+      filters: [{ name: "Executable", extensions: ["exe", "cmd", "bat"] }],
+    };
+    const result = window
+      ? await this.dialog.showOpenDialog(window, options)
+      : await this.dialog.showOpenDialog(options);
+    if (result.canceled || !result.filePaths?.[0]) return null;
+    return result.filePaths[0];
+  }
+
   async savePreferences(input) {
     await this.#loadPreferences();
     requireObject(input, "preferences");
     assertOnlyKeys(
       input,
-      ["theme", "recentProjects", "mascot", "motion"],
+      [
+        "theme",
+        "recentProjects",
+        "mascot",
+        "motion",
+        "worktreeRoots",
+        "customEditorPath",
+        "notificationsEnabled",
+      ],
       "preferences",
     );
-    for (const option of ["mascot", "motion"]) {
+    for (const option of ["mascot", "motion", "notificationsEnabled"]) {
       if (input[option] !== undefined && typeof input[option] !== "boolean")
         throw new TypeError(`${option} must be a boolean`);
     }
@@ -933,8 +968,56 @@ export class VibeBackend extends EventEmitter {
       }
     }
     const next = { theme: input.theme, recentProjects };
-    for (const option of ["mascot", "motion"])
+    for (const option of ["mascot", "motion", "notificationsEnabled"])
       if (input[option] !== undefined) next[option] = input[option];
+    // M3: per-repository custom worktree roots. Keys are canonical repo
+    // paths, values are dialog-chosen absolute parent dirs. Bounded to 20
+    // entries; each side is canonicalized / length-checked. A custom root is
+    // NOT required to be an authorized project — the dialog gesture plus
+    // git-service validation (realpath, UNC/symlink/junction, inside-repo,
+    // inside-worktree, permissions, collisions) is the boundary.
+    if (input.worktreeRoots !== undefined) {
+      if (input.worktreeRoots === null || typeof input.worktreeRoots !== "object" || Array.isArray(input.worktreeRoots))
+        throw new TypeError("worktreeRoots must be an object");
+      const entries = Object.entries(input.worktreeRoots);
+      if (entries.length > MAX_RECENT_PROJECTS)
+        throw new TypeError("worktreeRoots must hold at most 20 entries");
+      const validated = {};
+      for (const [rawRepo, rawRoot] of entries) {
+        if (typeof rawRepo !== "string" || typeof rawRoot !== "string") continue;
+        if (!rawRepo || !rawRoot || rawRepo.length > 4096 || rawRoot.length > 4096) continue;
+        let repo;
+        try {
+          repo = await this.#canonicalDirectory(rawRepo);
+        } catch {
+          continue;
+        }
+        const trimmed = rawRoot.trim();
+        if (!trimmed || trimmed.includes("\0")) continue;
+        if (!/^[A-Za-z]:[\\/]/.test(trimmed) && !trimmed.startsWith("\\\\") && !trimmed.startsWith("/")) continue;
+        if (trimmed.startsWith("\\\\")) continue;
+        validated[repo] = trimmed;
+      }
+      next.worktreeRoots = validated;
+    }
+    if (input.customEditorPath !== undefined) {
+      if (input.customEditorPath !== null && typeof input.customEditorPath !== "string")
+        throw new TypeError("customEditorPath must be a string or null");
+      if (typeof input.customEditorPath === "string" && input.customEditorPath) {
+        const trimmed = input.customEditorPath.trim();
+        if (!trimmed || trimmed.length > 4096 || trimmed.includes("\0"))
+          throw new TypeError("customEditorPath is invalid");
+        if (/[;&|`$]/.test(trimmed)) throw new TypeError("customEditorPath is invalid");
+        const abs = /^[A-Za-z]:[\\/]/.test(trimmed) || trimmed.startsWith("\\\\") || trimmed.startsWith("/");
+        if (!abs) throw new TypeError("customEditorPath must be absolute");
+        const lower = trimmed.toLowerCase();
+        if (!lower.endsWith(".exe") && !lower.endsWith(".cmd") && !lower.endsWith(".bat"))
+          throw new TypeError("customEditorPath must be a Windows executable");
+        next.customEditorPath = trimmed;
+      } else {
+        next.customEditorPath = null;
+      }
+    }
     await this.fs.mkdir(this.app.getPath("userData"), { recursive: true });
     const prefsPath = this.#preferencesPath();
     const tempPath = `${prefsPath}.${this.now()}.tmp`;
@@ -2000,9 +2083,25 @@ export class VibeBackend extends EventEmitter {
           }
         }
         this.preferences = { theme, recentProjects: projects };
-        for (const option of ["mascot", "motion"])
+        for (const option of ["mascot", "motion", "notificationsEnabled"])
           if (typeof stored[option] === "boolean")
             this.preferences[option] = stored[option];
+        if (stored.worktreeRoots && typeof stored.worktreeRoots === "object" && !Array.isArray(stored.worktreeRoots)) {
+          const validated = {};
+          for (const [repo, root] of Object.entries(stored.worktreeRoots).slice(0, MAX_RECENT_PROJECTS)) {
+            if (typeof repo !== "string" || typeof root !== "string") continue;
+            if (!repo || !root || repo.length > 4096 || root.length > 4096) continue;
+            if (root.includes("\0") || root.startsWith("\\\\")) continue;
+            validated[repo] = root;
+          }
+          if (Object.keys(validated).length) this.preferences.worktreeRoots = validated;
+        }
+        if (typeof stored.customEditorPath === "string" && stored.customEditorPath) {
+          const trimmed = stored.customEditorPath.trim();
+          const lower = trimmed.toLowerCase();
+          if (trimmed.length <= 4096 && !trimmed.includes("\0") && (lower.endsWith(".exe") || lower.endsWith(".cmd") || lower.endsWith(".bat")))
+            this.preferences.customEditorPath = trimmed;
+        }
       } catch {
         this.preferences = { theme: "system", recentProjects: [] };
       }

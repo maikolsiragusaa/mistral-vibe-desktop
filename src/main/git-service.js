@@ -846,20 +846,89 @@ export class GitWorkspaceService {
     return `${base}-${digest}`;
   }
 
-  async createWorktree({ projectPath, branch, directory } = {}) {
-    // Minimal local adapter: the Unified harness 2.26.1 exposes list/remove/
-    // reap/prune but no creation RPC, so creation is a circumscribed
-    // `git worktree add` in the app-managed space OUTSIDE the checkout
-    // (userData/worktrees/<repo>-<hash>/<name>). Rationale: a checkout nested
-    // inside the repository shows up as untracked noise in Changes, pollutes
-    // agent file watches, and risks accidental commits of the link directory.
-    // The shared .gitignore is never touched (too invasive); pre-existing
-    // worktrees in any location keep working for list/remove. Never moves the
-    // active session, never overwrites existing branches, never migrates or
-    // deletes older worktrees.
+  managedNamespaceFor(root) {
+    return this.#managedNamespaceFor(root);
+  }
+
+  async previewWorktreePath({ projectPath, branch, directory, customRoot } = {}) {
+    // Read-only preview of the final checkout path. Never creates anything.
     const root = await this.#requireRepository(projectPath);
-    if (typeof this.managedWorktreesRoot !== "string" || !path.isAbsolute(this.managedWorktreesRoot))
-      throw operationError("Worktree creation is unavailable in this installation");
+    const name = this.#worktreeDirName(branch, directory);
+    if (customRoot == null) {
+      if (typeof this.managedWorktreesRoot !== "string" || !path.isAbsolute(this.managedWorktreesRoot))
+        throw operationError("Worktree creation is unavailable in this installation");
+      return {
+        isGitRepository: true,
+        rootKind: "managed",
+        namespace: this.#managedNamespaceFor(root),
+        name,
+        target: path.join(this.managedWorktreesRoot, this.#managedNamespaceFor(root), name),
+      };
+    }
+    const canonicalCustom = await this.#validateCustomRoot(root, customRoot);
+    return {
+      isGitRepository: true,
+      rootKind: "custom",
+      namespace: this.#managedNamespaceFor(root),
+      name,
+      target: path.join(canonicalCustom, this.#managedNamespaceFor(root), name),
+    };
+  }
+
+  async worktreeDiskUsage({ projectPath } = {}) {
+    // Best-effort measured sizes of listed checkouts. Bounded walk (depth 6,
+    // 2000 files per worktree, 512-entry dirs); failures yield null sizes.
+    // Never deletes anything; no quota enforcement here.
+    const root = await this.#resolveRepository(projectPath);
+    if (!root) return { isGitRepository: false, rows: [] };
+    const listed = await this.worktrees({ projectPath });
+    const rows = [];
+    for (const item of (listed.items ?? []).slice(0, 25)) {
+      rows.push({ path: item.path, branch: item.branch ?? null, ...(await this.#measureDirectory(item.path)) });
+    }
+    return { isGitRepository: true, rows };
+  }
+
+  async #measureDirectory(start) {
+    let bytes = 0;
+    let files = 0;
+    try {
+      const queue = [{ dir: start, depth: 0 }];
+      while (queue.length && files < 2000) {
+        const { dir, depth } = queue.shift();
+        if (depth > 6) continue;
+        let names;
+        try {
+          names = await readdir(dir, { withFileTypes: true });
+        } catch {
+          break;
+        }
+        let count = 0;
+        for (const entry of names) {
+          if (count++ >= 512) break;
+          if (entry.name === ".git") continue;
+          const full = path.join(dir, entry.name);
+          try {
+            if (entry.isDirectory() && !entry.isSymbolicLink()) {
+              queue.push({ dir: full, depth: depth + 1 });
+            } else if (entry.isFile()) {
+              const details = await stat(full);
+              if (Number.isFinite(details.size)) bytes += details.size;
+              files += 1;
+              if (files >= 2000) break;
+            }
+          } catch {
+            continue;
+          }
+        }
+      }
+      return { bytes, files };
+    } catch {
+      return { bytes: null, files: null };
+    }
+  }
+
+  #worktreeDirName(branch, directory) {
     if (
       typeof branch !== "string" ||
       branch.length < 1 ||
@@ -874,22 +943,153 @@ export class GitWorkspaceService {
     const name = typeof directory === "string" && directory ? directory : branch.replaceAll("/", "-");
     if (!/^[A-Za-z0-9_.-]{1,128}$/.test(name))
       throw new TypeError("Worktree directory name is invalid");
-    let managed;
+    return name;
+  }
+
+  async #validateCustomRoot(root, customRoot) {
+    // M3 user-chosen directory boundary. Every refusal is explicit; the
+    // caller never falls back silently to the managed space.
+    if (typeof customRoot !== "string" || !customRoot || customRoot.length > MAX_PATH_LENGTH || customRoot.includes("\0"))
+      throw new TypeError("Custom worktree folder is invalid");
+    if (!path.isAbsolute(customRoot))
+      throw new TypeError("Custom worktree folder must be absolute");
+    if (customRoot.startsWith("\\\\") || customRoot.replaceAll("/", "\\").startsWith("\\\\"))
+      throw operationError("UNC paths cannot host worktrees here");
+    let canonical;
     try {
-      await mkdir(this.managedWorktreesRoot, { recursive: true });
-      managed = await realpath(this.managedWorktreesRoot);
-      const details = await stat(managed);
+      await mkdir(customRoot, { recursive: true });
+      canonical = await realpath(customRoot);
+      const details = await stat(canonical);
       if (!details.isDirectory()) throw new Error("not-directory");
-    } catch {
-      throw operationError("Worktree creation is unavailable in this installation");
+    } catch (error) {
+      if (error instanceof TypeError || (error && error.code === undefined && error.message)) throw error;
+      throw operationError("The custom worktree folder is unavailable or not writable");
     }
-    const namespace = path.join(managed, this.#managedNamespaceFor(root));
+    let canonicalRoot;
+    try {
+      canonicalRoot = await realpath(root);
+    } catch {
+      throw operationError("The selected project folder is unavailable");
+    }
+    const same = (a, b) =>
+      this.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+    if (same(canonical, canonicalRoot) || inside(canonicalRoot, canonical, this.platform))
+      throw operationError("The custom folder is inside the repository — choose a folder outside it");
+    if (inside(canonical, canonicalRoot, this.platform))
+      throw operationError("The custom folder contains the repository — choose a folder outside it");
+    // The parent itself must not equal or sit inside an existing checkout
+    // (that would nest the new worktree inside another worktree). A parent
+    // that merely *contains* worktrees it previously created is allowed —
+    // the per-target overlap check in createWorktree covers nesting.
+    try {
+      const result = await this.#runGit(
+        root,
+        ["worktree", "list", "--porcelain", "-z"],
+        "Git worktree list",
+        { maxBuffer: 1024 * 1024, readOnly: true },
+      );
+      const listed = parseWorktreeList(result.stdout, MAX_WORKTREES);
+      for (const item of listed.items) {
+        let canonicalItem;
+        try {
+          canonicalItem = await realpath(item.path);
+        } catch {
+          continue;
+        }
+        if (
+          same(canonical, canonicalItem) ||
+          inside(canonicalItem, canonical, this.platform)
+        )
+          throw operationError("The custom folder overlaps an existing worktree — choose another folder");
+      }
+    } catch (error) {
+      if (error && error.code === undefined && /overlaps an existing worktree/.test(error.message)) throw error;
+      // Listing failure is non-fatal for validation beyond this point.
+    }
+    return canonical;
+  }
+
+  async #refuseOverlappingCheckout(root, target) {
+    let canonicalRoot;
+    try {
+      canonicalRoot = await realpath(root);
+    } catch {
+      return;
+    }
+    const same = (a, b) =>
+      this.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+    if (same(target, canonicalRoot) || inside(canonicalRoot, target, this.platform))
+      throw operationError("The worktree destination is inside the repository — choose a folder outside it");
+    if (inside(target, canonicalRoot, this.platform))
+      throw operationError("The worktree destination contains the repository — choose another folder");
+    let listed;
+    try {
+      const result = await this.#runGit(
+        root,
+        ["worktree", "list", "--porcelain", "-z"],
+        "Git worktree list",
+        { maxBuffer: 1024 * 1024, readOnly: true },
+      );
+      listed = parseWorktreeList(result.stdout, MAX_WORKTREES).items;
+    } catch {
+      return;
+    }
+    for (const item of listed) {
+      let canonicalItem;
+      try {
+        canonicalItem = await realpath(item.path);
+      } catch {
+        continue;
+      }
+      if (
+        same(target, canonicalItem) ||
+        inside(canonicalItem, target, this.platform) ||
+        inside(target, canonicalItem, this.platform)
+      )
+        throw operationError("The worktree destination overlaps an existing worktree — choose another folder");
+    }
+  }
+
+  async createWorktree({ projectPath, branch, directory, customRoot } = {}) {
+    // Minimal local adapter: the Unified harness 2.26.1 exposes list/remove/
+    // reap/prune but no creation RPC, so creation is a circumscribed
+    // `git worktree add` either in the app-managed space OUTSIDE the checkout
+    // (userData/worktrees/<repo>-<hash>/<name>) or in a user-chosen parent
+    // validated by #validateCustomRoot. Rationale: a checkout nested
+    // inside the repository shows up as untracked noise in Changes, pollutes
+    // agent file watches, and risks accidental commits of the link directory.
+    // The shared .gitignore is never touched (too invasive); pre-existing
+    // worktrees in any location keep working for list/remove. Never moves the
+    // active session, never overwrites existing branches, never migrates or
+    // deletes older worktrees.
+    const root = await this.#requireRepository(projectPath);
+    const name = this.#worktreeDirName(branch, directory);
+    let baseDir;
+    if (customRoot == null) {
+      if (typeof this.managedWorktreesRoot !== "string" || !path.isAbsolute(this.managedWorktreesRoot))
+        throw operationError("Worktree creation is unavailable in this installation");
+      try {
+        await mkdir(this.managedWorktreesRoot, { recursive: true });
+        baseDir = await realpath(this.managedWorktreesRoot);
+        const details = await stat(baseDir);
+        if (!details.isDirectory()) throw new Error("not-directory");
+      } catch {
+        throw operationError("Worktree creation is unavailable in this installation");
+      }
+    } else {
+      baseDir = await this.#validateCustomRoot(root, customRoot);
+    }
+    const namespace = path.join(baseDir, this.#managedNamespaceFor(root));
     await mkdir(namespace, { recursive: true });
     const target = path.join(namespace, name);
-    if (!inside(managed, target, this.platform) || target === namespace)
+    if (!inside(baseDir, target, this.platform) || target === namespace)
       throw new TypeError("Worktree directory is invalid");
+    // Per-target overlap: the final checkout must not equal, contain, or sit
+    // inside an existing worktree or the repository itself.
+    await this.#refuseOverlappingCheckout(root, target);
     return this.#serializeMutation(root, async () => {
       await this.#verifyRepositoryIdentity(root);
+      await this.#refuseOverlappingCheckout(root, target);
       try {
         await stat(target);
         throw operationError("This worktree directory already exists");

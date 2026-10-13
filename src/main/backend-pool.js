@@ -137,6 +137,12 @@ export class VibeBackendPool extends EventEmitter {
   chooseProject() {
     return this.primary.chooseProject();
   }
+  chooseWorktreeRoot() {
+    return this.primary.chooseWorktreeRoot();
+  }
+  chooseEditorPath() {
+    return this.primary.chooseEditorPath();
+  }
   authorizeProjectRoot(cwd) {
     return this.primary.authorizeProjectRoot(cwd);
   }

@@ -580,14 +580,66 @@ test("configuration and attachment requests stay inside the pinned safe RPC shap
             {
               name: "arbitrary-process",
               transport: "stdio",
-              command: "cmd.exe",
+              command: "cmd.exe & calc.exe",
             },
           ],
         },
       ],
     }),
-    /not editable here|Only HTTP MCP transports/,
+    /shell string|not editable/,
   );
+  await assert.rejects(
+    backend.request("config/write", {
+      sessionId,
+      ops: [
+        {
+          op: "set",
+          path: "/mcp_servers",
+          value: [
+            {
+              name: "mixed-server",
+              transport: "stdio",
+              url: "https://example.com/mcp",
+              command: "server.exe",
+            },
+          ],
+        },
+      ],
+    }),
+    /cannot declare a URL|cannot mix/,
+  );
+  await assert.rejects(
+    backend.request("config/write", {
+      sessionId,
+      ops: [
+        {
+          op: "set",
+          path: "/mcp_servers/0/command",
+          value: "a; rm -rf",
+        },
+      ],
+    }),
+    /shell string|executable/,
+  );
+  // A well-formed stdio entry is an official config shape (verified live on
+  // Unified 2.26.1) and must pass desktop validation without executing anything.
+  await backend.request("config/write", {
+    sessionId,
+    ops: [
+      {
+        op: "set",
+        path: "/mcp_servers",
+        value: [
+          {
+            name: "fixture-stdio",
+            transport: "stdio",
+            command: "python",
+            args: ["-V"],
+          },
+        ],
+      },
+    ],
+  });
   await assert.rejects(
     backend.request("config/write", {
       sessionId,

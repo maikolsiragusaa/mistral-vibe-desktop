@@ -24,6 +24,11 @@ import {
 } from "lucide-react";
 import type { Runtime } from "./types";
 import "./resources.css";
+import { SkillImport, SkillLifecycle } from "./resources/SkillLifecycle";
+import { StdioMcpDialog } from "./resources/StdioMcpDialog";
+import { ToolsInspector } from "./resources/ToolsInspector";
+import { LayerInspector } from "./resources/LayerInspector";
+import { AcpPanel } from "./resources/AcpPanel";
 
 type ResourceTab =
   "mcp" | "skills" | "plugins" | "providers" | "diagnostics" | "usage";
@@ -440,6 +445,11 @@ export function ResourcesWorkspace({
   const [mcpFilter, setMcpFilter] = useState("");
   const [skillFilter, setSkillFilter] = useState("");
   const [pluginFilter, setPluginFilter] = useState("");
+  const [skillUpdates, setSkillUpdates] = useState<AnyRecord>({});
+  const [stdioOpen, setStdioOpen] = useState(false);
+  const [stdioEditing, setStdioEditing] = useState<AnyRecord | null>(null);
+  const [mcpLayerServers, setMcpLayerServers] = useState<AnyRecord[]>([]);
+  const [mcpTargetLayer, setMcpTargetLayer] = useState("");
   const previousFocus = useRef<HTMLElement | null>(null);
 
   const request = useCallback(
@@ -530,6 +540,55 @@ export function ResourcesWorkspace({
     ]);
     setConfig(configFromEffective(effective));
     setConfigFields(cleanConfigFields(fields));
+    // Authoritative per-layer MCP values for the stdio editor + layer view.
+    // Uses config/fields layerValues (per-layer), never a redacted merge.
+    try {
+      const rawFields =
+        isRecord(fields) && Array.isArray(fields.fields) ? fields.fields : [];
+      const mcpField = rawFields.find(
+        (field: unknown) => isRecord(field) && field.name === "mcp_servers",
+      );
+      const layerValues =
+        isRecord(mcpField) && Array.isArray(mcpField.layerValues)
+          ? mcpField.layerValues.filter(isRecord)
+          : [];
+      const targets =
+        isRecord(fields) && Array.isArray(fields.targets)
+          ? fields.targets.filter(
+              (item: unknown): item is string => typeof item === "string",
+            )
+          : [];
+      const writable = layerValues.find(
+        (entry) =>
+          typeof entry.layer === "string" &&
+          targets.includes(entry.layer) &&
+          Array.isArray(entry.value),
+      );
+      const fallback = layerValues.find((entry) => Array.isArray(entry.value));
+      const chosen = writable ?? fallback;
+      setMcpTargetLayer(
+        typeof chosen?.layer === "string" ? (chosen.layer as string) : "",
+      );
+      setMcpLayerServers(
+        Array.isArray(chosen?.value)
+          ? (chosen.value as unknown[]).filter(isRecord).map((item) => ({ ...(item as AnyRecord) }))
+          : [],
+      );
+    } catch {
+      setMcpLayerServers([]);
+      setMcpTargetLayer("");
+    }
+  }, [request, sessionId]);
+
+  const readSkillUpdates = useCallback(async () => {
+    if (!sessionId) return;
+    try {
+      const response = await request("skills/updates", { sessionId });
+      if (isRecord(response) && isRecord(response.updates)) setSkillUpdates(response.updates as AnyRecord);
+      else if (isRecord(response)) setSkillUpdates(response);
+    } catch {
+      // Updates are advisory; a missing registry response is not fatal.
+    }
   }, [request, sessionId]);
 
   const readDiagnostics = useCallback(async () => {
@@ -561,6 +620,7 @@ export function ResourcesWorkspace({
     const tasks = [
       { name: "MCP", read: readMcp },
       { name: "Skills", read: readSkills },
+      { name: "Skill updates", read: readSkillUpdates },
       { name: "Plugins", read: readPlugins },
       { name: "Providers", read: readProviderConfig },
       { name: "Diagnostics", read: readDiagnostics },
@@ -582,6 +642,7 @@ export function ResourcesWorkspace({
     readPlugins,
     readProviderConfig,
     readSkills,
+    readSkillUpdates,
     sessionId,
   ]);
 
@@ -604,6 +665,11 @@ export function ResourcesWorkspace({
     setDiagnostics(null);
     setAccount(null);
     setAuthLinks([]);
+    setSkillUpdates({});
+    setMcpLayerServers([]);
+    setMcpTargetLayer("");
+    setStdioOpen(false);
+    setStdioEditing(null);
     if (!sessionId)
       return () => {
         live = false;
@@ -1056,6 +1122,53 @@ export function ResourcesWorkspace({
       },
       "MCP sign-in removed.",
     );
+  };
+
+  const removeStdioServer = async (server: AnyRecord) => {
+    const name = String(server.name ?? "");
+    if (!name) return;
+    await runAction(
+      "remove-stdio:" + name,
+      async () => {
+        if (!mcpTargetLayer) throw new Error("No writable config layer was exposed.");
+        const next = mcpLayerServers.filter((entry) => String(entry.name) !== name);
+        const serialised = next.map((entry) => {
+          const out: AnyRecord = { name: entry.name };
+          if (entry.transport) out.transport = entry.transport;
+          if (entry.url) out.url = entry.url;
+          if (entry.command) out.command = entry.command;
+          if (entry.args) out.args = entry.args;
+          if (entry.env) out.env = entry.env;
+          if (entry.cwd) out.cwd = entry.cwd;
+          if (typeof entry.disabled === "boolean") out.disabled = entry.disabled;
+          return out;
+        });
+        await request("config/write", {
+          sessionId,
+          ops: [{ op: "set", path: "/mcp_servers", value: serialised, targetLayer: mcpTargetLayer }],
+          reason: "remove stdio MCP server",
+          reloadRuntime: true,
+        });
+        await request("mcp_catalog/refresh", { sessionId }).catch(() => undefined);
+        await readProviderConfig();
+        await readMcp();
+        const readback = await request("config/fields/read", { sessionId });
+        const fieldsRaw = isRecord(readback) && Array.isArray(readback.fields) ? readback.fields : [];
+        const field = fieldsRaw.find((item: unknown) => isRecord(item) && item.name === "mcp_servers");
+        const layers = isRecord(field) && Array.isArray(field.layerValues) ? field.layerValues : [];
+        const layer = layers.find((entry: unknown) => isRecord(entry) && entry.layer === mcpTargetLayer);
+        const values = isRecord(layer) && Array.isArray(layer.value) ? layer.value : [];
+        if (values.some((entry: unknown) => isRecord(entry) && entry.name === name))
+          throw new Error("Vibe still lists this server after removal.");
+        return values;
+      },
+      "Stdio server removed.",
+    );
+  };
+
+  const refreshSkillsAndUpdates = async () => {
+    await readSkills();
+    await readSkillUpdates();
   };
 
   const toggleSkill = async (skill: AnyRecord) => {
@@ -1558,6 +1671,17 @@ export function ResourcesWorkspace({
                     >
                       <Plus size={14} /> Add HTTP server
                     </button>
+                    <button
+                      type="button"
+                      className="rw-button rw-secondary"
+                      onClick={() => {
+                        setStdioEditing(null);
+                        openDialog(setStdioOpen);
+                      }}
+                      disabled={busyOrDisabled}
+                    >
+                      <Plus size={14} /> Add stdio server
+                    </button>
                   </div>
                 </div>
                 <label className="rw-search">
@@ -1800,7 +1924,83 @@ export function ResourcesWorkspace({
                 <div className="rw-caption">
                   Catalog reads show the session’s cached/current state. The
                   catalog is refreshed only when you choose “Refresh catalog.”
+                  Configured means declared; Enabled means allowed; Connected means verified;
+                  Usable means tools are actually announced — these states are not the same.
                 </div>
+                <LayerInspector
+                  targets={configFields.targets}
+                  fields={(() => {
+                    const raw = mcpLayerServers;
+                    return [
+                      {
+                        name: "mcp_servers",
+                        layerValues: mcpTargetLayer
+                          ? [{ layer: mcpTargetLayer, value: raw }]
+                          : [],
+                      },
+                    ];
+                  })()}
+                />
+                {mcpLayerServers.filter(
+                  (server) => server.transport === "stdio" || server.command,
+                ).length > 0 && (
+                  <section className="rw-stdio-list" aria-label="Local stdio servers">
+                    <h3 className="rw-subheading">
+                      Local stdio servers{" "}
+                      <span>
+                        {
+                          mcpLayerServers.filter(
+                            (server) => server.transport === "stdio" || server.command,
+                          ).length
+                        }
+                      </span>
+                    </h3>
+                    <p className="rw-note">
+                      Managed through the official config/mcp_servers layer ({mcpTargetLayer || "unknown"}).
+                      Editing never executes the command — validation is syntactic; connection follows on refresh.
+                    </p>
+                    <div className="rw-card-list">
+                      {mcpLayerServers
+                        .filter((server) => server.transport === "stdio" || server.command)
+                        .map((server) => (
+                          <article className="rw-card" key={String(server.name)}>
+                            <div className="rw-card-heading">
+                              <strong>{String(server.name)}</strong>
+                              <span className={"rw-status rw-status-" + (server.disabled ? "disabled" : "connected")}>
+                                {server.disabled ? "Disabled" : "Enabled"}
+                              </span>
+                            </div>
+                            <small className="rw-note">
+                              {String(server.command ?? "")}{" "}
+                              {Array.isArray(server.args) ? server.args.join(" ") : ""}
+                              {server.cwd ? ` · cwd ${String(server.cwd)}` : ""}
+                            </small>
+                            <footer className="rw-card-footer">
+                              <button
+                                type="button"
+                                className="rw-button rw-secondary rw-small"
+                                disabled={busyOrDisabled}
+                                onClick={() => {
+                                  setStdioEditing(server);
+                                  openDialog(setStdioOpen);
+                                }}
+                              >
+                                Edit stdio server
+                              </button>
+                              <button
+                                type="button"
+                                className="rw-button rw-secondary rw-small"
+                                disabled={busyOrDisabled}
+                                onClick={() => void removeStdioServer(server)}
+                              >
+                                Remove stdio server
+                              </button>
+                            </footer>
+                          </article>
+                        ))}
+                    </div>
+                  </section>
+                )}
               </section>
             )}
 
@@ -1902,6 +2102,29 @@ export function ResourcesWorkspace({
                               <pre>{skill.prompt}</pre>
                             </details>
                           )}
+                          <footer className="rw-card-footer">
+                            {skillUpdates?.[skill.name] !== undefined && (
+                              <span className="rw-status rw-status-needs_auth">
+                                Update available
+                              </span>
+                            )}
+                            {!locked && (
+                              <SkillLifecycle
+                                sessionId={sessionId}
+                                installedName={String(skill.name)}
+                                currentAlias={
+                                  typeof skill.alias === "string" ? skill.alias : undefined
+                                }
+                                request={request}
+                                refresh={refreshSkillsAndUpdates}
+                                onDone={(message) => setNotice(message)}
+                                onError={(message) => {
+                                  setError(message);
+                                  onError?.(message);
+                                }}
+                              />
+                            )}
+                          </footer>
                         </article>
                       );
                     })}
@@ -2005,10 +2228,28 @@ export function ResourcesWorkspace({
                             {skillDetail.body}
                           </pre>
                         )}
+                        {!skillDetail?.detail && !skillDetail?.body && (
+                          <p className="rw-note">
+                            Vibe returned no further detail for this entry. Local and plugin
+                            skills expose their instructions from the installed list above.
+                          </p>
+                        )}
+                        {selectedSkill.skill_id && (
+                          <SkillImport
+                            sessionId={sessionId}
+                            skillId={String(selectedSkill.skill_id)}
+                            request={request}
+                            refresh={refreshSkillsAndUpdates}
+                            onDone={(message) => setNotice(message)}
+                            onError={(message) => {
+                              setError(message);
+                              onError?.(message);
+                            }}
+                          />
+                        )}
                         <p className="rw-note">
-                          This desktop bridge exposes registry browsing and
-                          details. It does not expose a skill import or removal
-                          action.
+                          Importing never executes skill commands. Removal and updates
+                          happen from the installed list with explicit confirmation.
                         </p>
                       </section>
                     )}
@@ -2532,6 +2773,8 @@ export function ResourcesWorkspace({
                     Vibe reported no diagnostics issues for this session.
                   </p>
                 )}
+                <ToolsInspector runtime={runtime} />
+                <AcpPanel />
               </section>
             )}
 
@@ -2731,7 +2974,8 @@ export function ResourcesWorkspace({
             </header>
             <p>
               Vibe accepts HTTPS streamable HTTP endpoints here. Local stdio
-              servers remain configured in Vibe itself.
+              servers are configured through the official config/mcp_servers
+              layer via “Add stdio server” in the MCP tab.
             </p>
             <form onSubmit={(event) => void saveMcpServer(event)}>
               <label>
@@ -2832,6 +3076,74 @@ export function ResourcesWorkspace({
                   : "Remove server"}
               </button>
             </footer>
+          </section>
+        </div>
+      )}
+
+      {stdioOpen && (
+        <div
+          className="rw-modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeDialog(setStdioOpen);
+          }}
+        >
+          <section
+            className="rw-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="rw-stdio-title"
+            tabIndex={-1}
+            onKeyDown={(event) => dialogKeyDown(event, () => closeDialog(setStdioOpen))}
+          >
+            <StdioMcpDialog
+              sessionId={sessionId}
+              existing={
+                stdioEditing
+                  ? {
+                      name: String(stdioEditing.name ?? ""),
+                      transport: typeof stdioEditing.transport === "string" ? stdioEditing.transport : "stdio",
+                      command: typeof stdioEditing.command === "string" ? stdioEditing.command : "",
+                      args: Array.isArray(stdioEditing.args)
+                        ? (stdioEditing.args as unknown[]).filter((a): a is string => typeof a === "string")
+                        : [],
+                      env:
+                        stdioEditing.env !== null && typeof stdioEditing.env === "object" && !Array.isArray(stdioEditing.env)
+                          ? (stdioEditing.env as Record<string, string>)
+                          : {},
+                      cwd: typeof stdioEditing.cwd === "string" ? stdioEditing.cwd : null,
+                      disabled: stdioEditing.disabled === true,
+                    }
+                  : null
+              }
+              servers={mcpLayerServers.map((server) => ({
+                name: String(server.name ?? ""),
+                transport: typeof server.transport === "string" ? server.transport : undefined,
+                url: typeof server.url === "string" ? server.url : undefined,
+                command: typeof server.command === "string" ? server.command : undefined,
+                args: Array.isArray(server.args)
+                  ? (server.args as unknown[]).filter((a): a is string => typeof a === "string")
+                  : undefined,
+                env:
+                  server.env !== null && typeof server.env === "object" && !Array.isArray(server.env)
+                    ? (server.env as Record<string, string>)
+                    : undefined,
+                cwd: typeof server.cwd === "string" ? server.cwd : null,
+                disabled: server.disabled === true,
+              }))}
+              targetLayer={mcpTargetLayer}
+              onClose={() => closeDialog(setStdioOpen)}
+              request={request}
+              refresh={async () => {
+                await readProviderConfig();
+                await readMcp();
+              }}
+              onSaved={(message) => setNotice(message)}
+              onError={(message) => {
+                setError(message);
+                onError?.(message);
+              }}
+            />
           </section>
         </div>
       )}

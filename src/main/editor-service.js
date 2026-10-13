@@ -52,6 +52,8 @@ function validateFolder(folder) {
     throw new TypeError("A workspace folder is required");
   if (!isAbsolutePath(folder)) throw new TypeError("Workspace folder must be absolute");
   if (folder.startsWith("\\\\")) throw new TypeError("UNC workspace folders cannot be opened here");
+  if (folder.includes('"')) throw new TypeError("Workspace folder path is invalid");
+  if (/[<>|?*\x00-\x1f]/.test(folder)) throw new TypeError("Workspace folder path is invalid");
 }
 
 function validateRelativeFile(file) {
@@ -87,11 +89,18 @@ function validateExePath(exePath) {
   if (typeof exePath !== "string" || !exePath || exePath.length > MAX_PATH_LENGTH || exePath.includes("\0"))
     throw new TypeError("Editor executable path is invalid");
   if (!isAbsolutePath(exePath)) throw new TypeError("Editor executable must be absolute");
-  if (/[;&|`$]/.test(exePath)) throw new TypeError("Editor executable path is invalid");
+  if (/[;&|`$"]/.test(exePath)) throw new TypeError("Editor executable path is invalid");
+  if (/[\r\n]/.test(exePath)) throw new TypeError("Editor executable path is invalid");
   const lower = exePath.toLowerCase();
   if (!lower.endsWith(".exe") && !lower.endsWith(".cmd") && !lower.endsWith(".bat"))
     throw new TypeError("Editor executable must be a Windows executable");
   return exePath;
+}
+
+function quoteCmdArg(value) {
+  if (typeof value !== "string" || !value || value.includes('"') || /[\r\n\0]/.test(value))
+    throw new TypeError("Editor argument is invalid");
+  return `"${value}"`;
 }
 
 export class EditorService {
@@ -205,6 +214,35 @@ export class EditorService {
     return [folder, full];
   }
 
+  #systemCmd() {
+    const systemRoot = this.env?.SystemRoot ?? "C:\\Windows";
+    return path.join(systemRoot, "System32", "cmd.exe");
+  }
+
+  #spawnGuarded(exe, argv, options) {
+    // Synchronous spawn failures (missing exe, bad cwd) must never report
+    // success. Async process errors after a successful spawn belong to the
+    // launched app, not to this handoff confirmation.
+    let child;
+    try {
+      child = this.spawnImpl(exe, argv, {
+        shell: false,
+        windowsHide: false,
+        detached: true,
+        stdio: "ignore",
+        ...options,
+      });
+    } catch (cause) {
+      throw new Error("The editor or terminal could not be launched");
+    }
+    try {
+      child?.unref?.();
+    } catch {
+      // unref failures never fail the handoff itself.
+    }
+    return child;
+  }
+
   async open({ editorExe = null, editorId = null, folder, file = null, line = null } = {}) {
     let exe = null;
     if (editorExe != null) {
@@ -222,39 +260,38 @@ export class EditorService {
     const argv = this.#buildArgv(authorizedFolder, file, line);
     // Structured spawn, shell:false, no interpolation. The editor runs as its
     // own app; nothing is auto-launched in the background.
-    const child = this.spawnImpl(exe, argv, {
-      windowsHide: false,
-      detached: true,
-      stdio: "ignore",
-    });
-    child?.unref?.();
+    // Windows cannot spawn .cmd/.bat directly with shell:false, so batch
+    // launchers are routed through cmd.exe /d /s /c with each argument
+    // individually quoted. No shell:true, no string interpolation.
+    const lower = exe.toLowerCase();
+    if (lower.endsWith(".cmd") || lower.endsWith(".bat")) {
+      const cmd = this.#systemCmd();
+      if (!(await this.#existsFile(cmd))) throw new Error("Windows command processor is unavailable");
+      const quoted = [exe, ...argv].map(quoteCmdArg).join(" ");
+      this.#spawnGuarded(cmd, ["/d", "/s", "/c", quoted], {});
+      return { exePath: exe, argv, launcher: cmd };
+    }
+    this.#spawnGuarded(exe, argv, {});
     return { exePath: exe, argv };
   }
 
   async openTerminal({ folder } = {}) {
     const authorizedFolder = await this.#resolveAuthorizedFolder(folder);
-    // Windows terminal here via the shell's start verb with structured argv.
-    // No user content is interpolated into a command string.
+    // Direct launches only: wt.exe -d <folder>, else an interactive cmd.exe
+    // started with cwd set to the folder and /d (no AutoRun). The folder is
+    // never parsed as command text, so shell metacharacters in its name
+    // cannot break out into a second command. No shell string is built.
     if (this.platform !== "win32") throw new Error("Terminal handoff is Windows-only here");
     const wt = await this.#resolveInPath(["wt.exe"]);
     if (wt) {
-      const child = this.spawnImpl(wt, ["-d", authorizedFolder], {
-        windowsHide: false,
-        detached: true,
-        stdio: "ignore",
-      });
-      child?.unref?.();
+      this.#spawnGuarded(wt, ["-d", authorizedFolder], {});
       return { exePath: wt, argv: ["-d", authorizedFolder] };
     }
-    const systemRoot = this.env?.SystemRoot ?? "C:\\Windows";
-    const cmd = path.join(systemRoot, "System32", "cmd.exe");
+    const cmd = this.#systemCmd();
     if (!(await this.#existsFile(cmd))) throw new Error("Windows terminal is unavailable");
-    const child = this.spawnImpl(cmd, ["/c", "start", "", "/d", authorizedFolder], {
-      windowsHide: true,
-      detached: true,
-      stdio: "ignore",
-    });
-    child?.unref?.();
-    return { exePath: cmd, argv: ["/c", "start", "", "/d", authorizedFolder] };
+    // /d disables AutoRun hijack; cwd places the shell in the workspace
+    // without passing the path through cmd's command parser.
+    this.#spawnGuarded(cmd, ["/d"], { cwd: authorizedFolder, windowsHide: false });
+    return { exePath: cmd, argv: ["/d"], cwd: authorizedFolder };
   }
 }

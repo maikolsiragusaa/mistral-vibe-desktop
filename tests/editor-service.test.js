@@ -80,7 +80,7 @@ test("open uses structured argv and authorizes the folder first", async () => {
     statImpl: fakeStat(["C:\\Editors\\Code.exe"]),
     spawnImpl: (exe, argv, opts) => {
       calls.push({ exe, argv, opts });
-      assert.equal(opts.shell, undefined);
+      assert.equal(opts.shell, false);
       return { unref() {} };
     },
     platform: "win32",

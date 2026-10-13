@@ -53,7 +53,13 @@ const SAFE_MCP_FIELDS = new Set([
   "sampling_enabled",
   "disabled",
   "disabled_tools",
+  "command",
+  "args",
+  "env",
+  "cwd",
 ]);
+const STDIO_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 const PARAM_KEYS = Object.freeze({
   "setup/status": ["provider"],
@@ -2757,6 +2763,57 @@ function validateModelField(key, value) {
   }
 }
 
+function validateStdioCommand(value) {
+  const raw = requireString(value, "command", { min: 1, max: 1024 });
+  if (raw.includes("\0") || /[\r\n]/.test(raw))
+    throw new TypeError("MCP command must not contain line breaks");
+  if (/[;&|`$]/.test(raw))
+    throw new TypeError("MCP command must be an executable, not a shell string");
+  return raw;
+}
+
+function validateStdioArgs(value) {
+  if (!Array.isArray(value) || value.length > 64)
+    throw new TypeError("MCP args must be a list of at most 64 entries");
+  for (const entry of value) {
+    requireString(entry, "MCP arg", { min: 0, max: 4096 });
+    if (entry.includes("\0"))
+      throw new TypeError("MCP args must not contain null bytes");
+  }
+}
+
+function validateStdioEnv(value) {
+  requireObject(value, "MCP env");
+  const keys = Object.keys(value);
+  if (keys.length > 64) throw new TypeError("MCP env has too many entries");
+  for (const [key, entry] of Object.entries(value)) {
+    if (!ENV_NAME_PATTERN.test(key))
+      throw new TypeError("MCP env keys must be environment variable names");
+    requireString(entry, `MCP env ${key}`, { min: 0, max: 8192 });
+    if (entry.includes("\0"))
+      throw new TypeError("MCP env values must not contain null bytes");
+  }
+}
+
+function validateStdioCwd(value) {
+  const raw = requireString(value, "cwd", { min: 1, max: 4096 });
+  if (raw.includes("\0")) throw new TypeError("MCP cwd is invalid");
+  if (raw.startsWith("\\\\"))
+    throw new TypeError("MCP working directory cannot be UNC");
+  const isWindowsAbs = /^[A-Za-z]:[\\/]/.test(raw);
+  const isPosixAbs = raw.startsWith("/");
+  if (!isWindowsAbs && !isPosixAbs)
+    throw new TypeError("MCP working directory must be absolute");
+}
+
+function validateMcpName(value) {
+  const raw = requireString(value, "name", { min: 1, max: 128 });
+  if (!STDIO_NAME_PATTERN.test(raw))
+    throw new TypeError(
+      "MCP server name must start alphanumerically and use only letters, digits, dot, underscore or dash",
+    );
+}
+
 function validateSafeMcpServer(value) {
   requireObject(value, "MCP server config");
   for (const key of Object.keys(value))
@@ -2764,15 +2821,59 @@ function validateSafeMcpServer(value) {
       throw new TypeError(`MCP config field is not editable here: ${key}`);
   if (
     value.transport !== undefined &&
-    !["http", "streamable-http"].includes(value.transport)
+    !["http", "streamable-http", "stdio"].includes(value.transport)
   )
-    throw new TypeError(
-      "Only HTTP MCP transports are supported by the safe config editor",
-    );
+    throw new TypeError("MCP transport must be http, streamable-http or stdio");
+  const keys = Object.keys(value);
+  const looksFull =
+    Object.hasOwn(value, "name") &&
+    (Object.hasOwn(value, "transport") ||
+      Object.hasOwn(value, "url") ||
+      Object.hasOwn(value, "command"));
+  const isSingleLeaf = keys.length === 1;
+  const stdioHint =
+    value.transport === "stdio" ||
+    value.command !== undefined ||
+    value.args !== undefined ||
+    value.env !== undefined ||
+    value.cwd !== undefined;
+  const httpHint =
+    value.transport === "http" ||
+    value.transport === "streamable-http" ||
+    value.url !== undefined;
+  if (looksFull && stdioHint && httpHint && value.transport === undefined)
+    throw new TypeError("MCP server cannot mix URL and stdio command fields");
+  if (value.transport === "stdio" && value.url !== undefined)
+    throw new TypeError("stdio MCP servers cannot declare a URL");
+  if (
+    (value.transport === "http" || value.transport === "streamable-http") &&
+    (value.command !== undefined ||
+      value.args !== undefined ||
+      value.env !== undefined ||
+      value.cwd !== undefined)
+    )
+    throw new TypeError("HTTP MCP servers cannot declare stdio fields");
   if (value.url !== undefined) validateHttpsEndpoint(value.url, "MCP URL");
-  for (const key of ["name", "prompt"])
-    if (value[key] !== undefined)
-      requireString(value[key], key, { min: 0, max: 2000 });
+  if (value.name !== undefined) {
+    if (looksFull || isSingleLeaf) {
+      if (typeof value.name !== "string" || !value.name)
+        throw new TypeError("MCP server name is required");
+      if (looksFull) validateMcpName(value.name);
+      else requireString(value.name, "name", { min: 0, max: 2000 });
+    } else requireString(value.name, "name", { min: 0, max: 2000 });
+  }
+  if (value.prompt !== undefined)
+    requireString(value.prompt, "prompt", { min: 0, max: 2000 });
+  if (value.command !== undefined) validateStdioCommand(value.command);
+  if (value.args !== undefined) validateStdioArgs(value.args);
+  if (value.env !== undefined) validateStdioEnv(value.env);
+  if (value.cwd !== undefined) validateStdioCwd(value.cwd);
+  if (looksFull && value.transport === "stdio") {
+    if (value.command === undefined)
+      throw new TypeError("stdio MCP servers require a command");
+    if (value.name === undefined)
+      throw new TypeError("stdio MCP servers require a name");
+  }
   for (const key of ["startup_timeout_sec", "tool_timeout_sec"])
     if (
       value[key] !== undefined &&

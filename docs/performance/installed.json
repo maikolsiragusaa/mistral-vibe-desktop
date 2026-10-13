@@ -1,31 +1,31 @@
 {
   "launchMode": "installed",
-  "measuredAt": "2026-10-13T10:53:25.217Z",
-  "coldStartupMs": 3798,
-  "workingSetMiB": 500,
-  "idleCpuPercentOfOneCore": 0.57,
-  "sampleIntervalSeconds": 5.45,
+  "measuredAt": "2026-10-13T20:24:10.413Z",
+  "coldStartupMs": 3173,
+  "workingSetMiB": 501.1,
+  "idleCpuPercentOfOneCore": 0,
+  "sampleIntervalSeconds": 5.42,
   "scope": "Main Electron process and all recursive descendants, including renderer, GPU, utility and Vibe runtime children. Working sets can include shared pages.",
   "processes": [
     {
       "name": "conhost",
-      "workingSetMiB": 10.7
+      "workingSetMiB": 11.3
     },
     {
       "name": "electron",
-      "workingSetMiB": 44.7
+      "workingSetMiB": 96.1
     },
     {
       "name": "electron",
-      "workingSetMiB": 106.2
+      "workingSetMiB": 44.6
     },
     {
       "name": "electron",
-      "workingSetMiB": 96
+      "workingSetMiB": 110.6
     },
     {
       "name": "electron",
-      "workingSetMiB": 112.4
+      "workingSetMiB": 108.6
     },
     {
       "name": "python",

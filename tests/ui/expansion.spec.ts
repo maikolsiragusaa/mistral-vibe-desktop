@@ -4,9 +4,11 @@ import { createServer, type Server } from "node:http";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { launchDesktop } from "./launch-desktop";
 
-test.setTimeout(240_000);
+// The M2.1 worktree/preview coverage adds minutes of real interaction
+// (creation, removal gate, isolated window, redirect block) on top of the
+// M1 flow; loaded CI runners need headroom below the 45-minute job cap.
+test.setTimeout(480_000);
 
 const repo = process.cwd();
 const python = path.join(repo, ".runtime/venv/Scripts/python.exe");

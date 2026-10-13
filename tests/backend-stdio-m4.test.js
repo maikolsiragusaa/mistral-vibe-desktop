@@ -48,8 +48,10 @@ async function createBackend(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "vibe-stdio-m4-"));
   const userData = path.join(root, "user-data");
   await fs.mkdir(userData, { recursive: true });
-  const project = path.join(root, "project");
-  await fs.mkdir(project, { recursive: true });
+  await fs.mkdir(path.join(root, "project"), { recursive: true });
+  // Canonicalize like production dialog callers: CI runners expose TEMP
+  // through short 8.3 names (RUNNER~1) while the service keys by realpath.
+  const project = await fs.realpath(path.join(root, "project"));
   const app = {
     getVersion: () => "0.0.0-test",
     getAppPath: () => root,

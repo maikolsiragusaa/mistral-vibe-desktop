@@ -9,6 +9,9 @@ P0/P1 hardening on top of M1, no new large features, no harness changes.
   2.26.1: detached forks shut down server-side with `session_attached=false`).
   Unlisted fork sources fail before allocation; duplicate-id races stop the
   stray worker; rewind/continue ownership remapping covered by tests.
+  Follow-up: forks of an owned source with a live turn are rejected
+  (attached and detached), matching the single-backend guard the pool would
+  otherwise bypass via an idle worker.
 - Subagent inspection: sync state (loading/syncing/watching/synced/stale/
   error), last-update time, non-destructive errors with manual retry, backoff
   on real errors, suspension while hidden with immediate resume, stale-response
@@ -30,13 +33,20 @@ P0/P1 hardening on top of M1, no new large features, no harness changes.
   unsupported/unknown; `session/compact` disables with an explanation when the
   engine reports not-implemented (2.26.1); auth/transport failures never become
   verdicts. `agents/list` joins `review/*`, `stats/read`, `diagnostics/list`,
-  `tools/list` as Unified `method_not_found`.
+  `tools/list` as Unified `method_not_found`. Follow-up: `review/state`
+  verdicts are cached so the whole `review/*` family stops firing doomed
+  requests after the first not-implemented answer, and Compact persists its
+  unsupported verdict to the shared cache; capability entries are forgotten on
+  session stop/delete.
 - Security review recorded in `docs/security-review-m1.1.md`; no new IPC,
   sandbox/CSP/approvals unchanged. Residual: subpath canonicalization uses
   `resolve` (same as pre-existing shell handling; Git keeps escape rejection).
-- Suite: 84 tests passing (was 61). Real Electron baseline + expansion pass;
-  sidebar-drag flake observed once in 6 runs (existing pointer-timing flake,
-  covered by the documented single-retry policy; no timeout inflation).
+- Suite: 87 tests passing (was 61). New: pool fork blocked during a live
+  source turn (attached and detached), pool rewind remap (in-place keeps
+  id/owner, fork-rewind remaps to the new id on the same worker),
+  duplicate-id/RPC-failure forks leave no ownership and recover on retry.
+  Real Electron baseline (21.5s) + expansion (1.6m) pass; sidebar-drag now
+  waits for a visible, stable handle before sampling (no timeout inflation).
 
 ## 0.3.0 — Workspace evolution M1: navigation, subagents, sessions
 

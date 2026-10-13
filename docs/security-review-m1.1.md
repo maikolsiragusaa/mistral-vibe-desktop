@@ -11,7 +11,7 @@ sandbox behavior were changed to make tests pass.
 | Surface | Policy | Verdict |
 | ------- | ------ | ------- |
 | `session/start|resume|continue` | `agentConfig` allowlisted to `{cwd, agent}`; cwd must be a chosen project; pool serializes allocation under a cap of 4 | Safe |
-| `session/fork` | Source must be listed for a chosen project; read-only children rejected in backend and pool; active-turn guard on the source; `attach:false` is host-routed with no worker/ownership (M1.1 fix) | Safe |
+| `session/fork` | Source must be listed for a chosen project; read-only children rejected in backend and pool; active-turn guard on the source (pool and single backend agree, M1.1 follow-up); `attach:false` is host-routed with no worker/ownership (M1.1 fix) | Safe |
 | `session/rewind` | Listed, non-child source; active-turn guard; fork-rewind remaps ownership on the same worker; in-place is destructive and UI-gated behind an explicit fork-vs-inplace choice | Safe, UI-confirmed |
 | `session/delete` | Rejected while attached/owned (`Stop this session before deleting it`); otherwise host-deleted only for listed sessions | Safe |
 | `session/history/clear` | Active-session only; **not exposed in the desktop UI** (no button), so no accidental trigger exists | Safe (backend-only) |
@@ -47,5 +47,8 @@ sandbox behavior were changed to make tests pass.
 - `tests/session-lifecycle.test.js`: detached forks consume no worker/slot,
   failures change no ownership, concurrent forks stay under the cap with
   distinct owners, live deletes rejected, rewind/continue remap correctly.
+  Follow-up: forks of a live-turn source rejected, fork-rewind remap checked
+  explicitly, duplicate-id/RPC-failure forks verified ownership-free with
+  retry recovery.
 - `tests/subagents.test.js`: children readable only, resume/steer rejected.
-- Full suite: 84 passing at M1.1 close.
+- Full suite: 87 passing at M1.1 close.

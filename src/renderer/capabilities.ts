@@ -15,6 +15,9 @@ export type CapabilityState = "verified" | "unsupported" | "unknown";
 
 export const OPTIONAL_METHODS = [
   "session/compact",
+  // review/state is probed as the representative of the review/* family
+  // (baseline, turnDiff, hunks, approve, revert): when the engine reports it
+  // as unsupported the UI gates the whole family without firing each member.
   "review/state",
   "stats/read",
   "diagnostics/list",

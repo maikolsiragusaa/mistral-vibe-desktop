@@ -368,6 +368,10 @@ test("real desktop keeps Git, configured models, approvals and sessions grounded
     const leftEdge = page.getByRole("separator", {
       name: "Resize project sidebar",
     });
+    // Wait for a stable, visible handle before sampling its box: the known
+    // sidebar-drag flake races pointer setup against layout, so assert state
+    // first instead of inflating timeouts.
+    await expect(leftEdge).toBeVisible();
     let edge = (await leftEdge.boundingBox())!;
     await page.mouse.move(edge.x + 3, edge.y + 120);
     await page.mouse.down();
@@ -378,6 +382,7 @@ test("real desktop keeps Git, configured models, approvals and sessions grounded
     const rightEdge = page.getByRole("separator", {
       name: "Resize context sidebar",
     });
+    await expect(rightEdge).toBeVisible();
     edge = (await rightEdge.boundingBox())!;
     const clientWidth = await page.evaluate(() => innerWidth);
     await page.mouse.move(edge.x + 3, edge.y + 120);

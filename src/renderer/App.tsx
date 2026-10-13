@@ -30,6 +30,12 @@ import {
   setDraftPersistenceEnabled,
 } from "./drafts";
 import { CompactMenuItem } from "./CompactMenuItem";
+import {
+  forgetSession,
+  getCapability,
+  isUnsupportedError,
+  setCapability,
+} from "./capabilities";
 import "./desktop.css";
 import {
   ArrowUp,
@@ -401,17 +407,30 @@ export function App() {
   );
   const loadReview = useCallback(
     async (sessionId: string) => {
+      // review/* is a family: a cached review/state verdict gates the whole
+      // group so sessions on engines without support never fire doomed
+      // requests on every open (Unified 2.26.1: method_not_found).
+      if (getCapability(sessionId, "review/state") === "unsupported") {
+        if (stateRef.current?.session.id === sessionId)
+          setReview({
+            files: [],
+            unavailable:
+              "This Vibe engine does not support change review yet. File operations are visible in Activity.",
+          });
+        return;
+      }
       try {
         const result = await request<any>("review/state", { sessionId });
+        setCapability(sessionId, "review/state", "verified");
         if (stateRef.current?.session.id === sessionId) setReview(result);
       } catch (error) {
         if (stateRef.current?.session.id !== sessionId) return;
         const message = error instanceof Error ? error.message : String(error);
+        const unsupported = isUnsupportedError(message);
+        if (unsupported) setCapability(sessionId, "review/state", "unsupported");
         setReview({
           files: [],
-          unavailable: /method[_ ]not[_ ]found|not[_ ]implemented/i.test(
-            message,
-          )
+          unavailable: unsupported
             ? "This Vibe engine does not support change review yet. File operations are visible in Activity."
             : `Could not load changes: ${message}`,
         });
@@ -1713,6 +1732,7 @@ export function App() {
                         sessionId: state.session.id,
                       });
                       sessionCache.current.delete(state.session.id);
+                      forgetSession(state.session.id);
                       adopt(null);
                       setRuntime(null);
                       await listSessions();
@@ -1740,6 +1760,7 @@ export function App() {
                       }
                       sessionCache.current.delete(id);
                       await request("session/delete", { sessionId: id });
+                      forgetSession(id);
                       adopt(null);
                       setRuntime(null);
                       await listSessions();

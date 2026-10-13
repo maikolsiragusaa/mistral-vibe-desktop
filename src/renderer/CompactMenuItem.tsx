@@ -1,5 +1,10 @@
 import { useEffect, useState } from "react";
-import { getCapability, probeCapability } from "./capabilities";
+import {
+  getCapability,
+  isUnsupportedError,
+  probeCapability,
+  setCapability,
+} from "./capabilities";
 
 interface Props {
   sessionId: string;
@@ -69,7 +74,8 @@ export function CompactMenuItem({
           })
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e);
-            if (/not[_ ]implemented|method[_ ]not[_ ]found/i.test(message)) {
+            if (isUnsupportedError(message)) {
+              setCapability(sessionId, "session/compact", "unsupported");
               setState("unsupported");
               onError(
                 "This Vibe engine does not implement session/compact. History stays as-is.",

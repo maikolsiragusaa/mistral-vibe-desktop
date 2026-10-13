@@ -1,10 +1,10 @@
 {
   "launchMode": "installed",
-  "measuredAt": "2026-10-13T01:36:18.437Z",
-  "coldStartupMs": 3336,
-  "workingSetMiB": 500.3,
-  "idleCpuPercentOfOneCore": 0.56,
-  "sampleIntervalSeconds": 5.57,
+  "measuredAt": "2026-10-13T02:14:15.261Z",
+  "coldStartupMs": 3251,
+  "workingSetMiB": 502,
+  "idleCpuPercentOfOneCore": 0,
+  "sampleIntervalSeconds": 5.55,
   "scope": "Main Electron process and all recursive descendants, including renderer, GPU, utility and Vibe runtime children. Working sets can include shared pages.",
   "processes": [
     {
@@ -13,27 +13,27 @@
     },
     {
       "name": "electron",
-      "workingSetMiB": 100
+      "workingSetMiB": 112.7
     },
     {
       "name": "electron",
-      "workingSetMiB": 100.4
+      "workingSetMiB": 44.5
     },
     {
       "name": "electron",
-      "workingSetMiB": 44.8
+      "workingSetMiB": 105.7
     },
     {
       "name": "electron",
-      "workingSetMiB": 113.6
-    },
-    {
-      "name": "python",
-      "workingSetMiB": 122.2
+      "workingSetMiB": 97.3
     },
     {
       "name": "python",
       "workingSetMiB": 4
+    },
+    {
+      "name": "python",
+      "workingSetMiB": 122.5
     },
     {
       "name": "vibe-app-server",

@@ -296,6 +296,112 @@ test("0.3.0 rewind and continue keep ownership consistent", async (t) => {
   );
 });
 
+test("0.3.0 pool blocks forks of a source with a live turn", async (t) => {
+  const { backendPool, selectedProject } = await createPool(t);
+  const first = await backendPool.request("session/start", { agentConfig: { cwd: selectedProject } });
+  const sourceId = first.state.session.id;
+  const workersBefore = backendPool.backends.length;
+  const sourceWorker = backendPool.ownedSessions.get(sourceId);
+  sourceWorker.activeTurnId = "turn-live-fork-guard";
+  try {
+    await assert.rejects(
+      backendPool.request("session/fork", { sourceSessionId: sourceId, attach: true }),
+      /Interrupt or wait for the active turn/,
+    );
+    await assert.rejects(
+      backendPool.request("session/fork", { sourceSessionId: sourceId, attach: false }),
+      /Interrupt or wait for the active turn/,
+    );
+    assert.equal(backendPool.backends.length, workersBefore);
+    assert.equal(backendPool.ownedSessions.get(sourceId), sourceWorker);
+  } finally {
+    sourceWorker.activeTurnId = null;
+  }
+  // The guard lifts once the turn completes: the same fork then succeeds.
+  const forked = await backendPool.request("session/fork", {
+    sourceSessionId: sourceId,
+    attach: false,
+  });
+  assert.equal(typeof forked?.state?.session?.id, "string");
+});
+
+test("0.3.0 pool rewind remaps ownership only for fork-rewind", async (t) => {
+  const { backendPool, selectedProject } = await createPool(t);
+  const first = await backendPool.request("session/start", { agentConfig: { cwd: selectedProject } });
+  const sourceId = first.state.session.id;
+  const worker = backendPool.ownedSessions.get(sourceId);
+
+  const inplace = await backendPool.request("session/rewind", {
+    sessionId: sourceId,
+    entryId: "entry-1",
+  });
+  assert.equal(inplace?.state?.session?.id, sourceId);
+  assert.equal(backendPool.ownedSessions.get(sourceId), worker);
+
+  const forked = await backendPool.request("session/rewind", {
+    sessionId: sourceId,
+    entryId: "entry-1",
+    inplace: false,
+  });
+  const nextId = forked?.state?.session?.id;
+  assert.equal(typeof nextId, "string");
+  assert.notEqual(nextId, sourceId);
+  assert.equal(backendPool.ownedSessions.has(sourceId), false);
+  assert.equal(backendPool.ownedSessions.get(nextId), worker);
+});
+
+test("0.3.0 failed attached forks leave no ownership and recover on retry", async (t) => {
+  const { backendPool, selectedProject } = await createPool(t);
+  const first = await backendPool.request("session/start", { agentConfig: { cwd: selectedProject } });
+  const sourceId = first.state.session.id;
+  // Park an idle worker so the failing forks reuse it instead of growing.
+  const parked = await backendPool.request("session/fork", {
+    sourceSessionId: sourceId,
+    attach: true,
+  });
+  await backendPool.request("session/stop", { sessionId: parked?.state?.session?.id });
+  const workersBefore = backendPool.backends.length;
+  const idleWorker = backendPool.backends.find((backend) => !backend.activeSessionId);
+  assert.ok(idleWorker);
+  const passthrough = idleWorker.request.bind(idleWorker);
+  let duplicateOnce = true;
+  idleWorker.request = async (method, params) => {
+    if (method === "session/fork" && duplicateOnce) {
+      duplicateOnce = false;
+      return { state: { session: { id: sourceId } } };
+    }
+    if (method === "session/fork") throw new Error("simulated fork RPC failure");
+    return passthrough(method, params);
+  };
+  try {
+    // Duplicate id: the stray worker is stopped and nothing is registered.
+    await assert.rejects(
+      backendPool.request("session/fork", { sourceSessionId: sourceId, attach: true }),
+      /already attached/,
+    );
+    assert.equal(backendPool.ownedSessions.size, 1);
+    assert.equal(backendPool.ownedSessions.get(sourceId)?.activeSessionId, sourceId);
+    // RPC failure: no ownership change, no slot burned.
+    await assert.rejects(
+      backendPool.request("session/fork", { sourceSessionId: sourceId, attach: true }),
+      /simulated fork RPC failure/,
+    );
+    assert.deepEqual([...backendPool.ownedSessions.keys()], [sourceId]);
+    assert.equal(backendPool.backends.length, workersBefore);
+    assert.equal(idleWorker.activeSessionId, null);
+  } finally {
+    idleWorker.request = passthrough;
+  }
+  // Retry after the failure recovers on the same worker.
+  const recovered = await backendPool.request("session/fork", {
+    sourceSessionId: sourceId,
+    attach: true,
+  });
+  const recoveredId = recovered?.state?.session?.id;
+  assert.notEqual(recoveredId, sourceId);
+  assert.ok(backendPool.ownedSessions.has(recoveredId));
+});
+
 async function createPool(t) {
   const root = await createTempRoot("vibe-desktop-pool-");
   const userData = path.join(root, "user-data");

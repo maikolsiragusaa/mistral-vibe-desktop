@@ -207,6 +207,15 @@ export class VibeBackendPool extends EventEmitter {
       // Validate the source is listed before consuming a worker slot: an
       // unlisted source must fail without growing the backend list.
       this.primary.validateForkSourceForPool(params);
+      // A source owned by another worker with a live turn must not be forked
+      // mid-turn: the transcript could race the copy. This matches the
+      // single backend's active-turn guard for the same source, which the
+      // pool would otherwise bypass by allocating an idle worker.
+      const sourceOwner = this.ownedSessions.get(sourceId);
+      if (sourceOwner?.activeTurnId)
+        throw new Error(
+          "Interrupt or wait for the active turn before forking this session",
+        );
     }
     // Upstream contract (2.26.1): attach:false persists a known session but
     // attaches nothing (backend is shut down server-side, session_attached=false).

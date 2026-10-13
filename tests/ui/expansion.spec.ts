@@ -1157,6 +1157,10 @@ test("real desktop keeps Git, configured models, approvals and sessions grounded
     await gitWorkspace
       .getByRole("button", { name: "Create", exact: true })
       .click();
+    // Gate on the explicit success notice (and the new checkout row), not on
+    // the pre-creation path preview, which also names the branch before the
+    // checkout exists.
+    await expect(gitWorkspace).toContainText("Worktree created at");
     await expect(gitWorkspace).toContainText("ui-created-branch");
     await expect(gitWorkspace).toContainText("app-managed space");
     expect(runGit(workspace, "rev-parse", "HEAD")).toBe(headBeforeWorktree);

@@ -3,9 +3,12 @@
 Branch: `codex/windows-client` · PR #1 · **no merge to `main`, no release, no upstream modification.**
 Runtime: official Mistral Vibe Unified **2.26.1 frozen** (no upgrade, no paid cloud sessions created, no end-to-end Teleport completed).
 
-## Final commit
+## Final commit & branch state
 
-- Recorded by the closing commit on `codex/windows-client` (see `git log --oneline -5` at delivery time). Tree builds on checkpoint `af136ed7c08a147502471dd04faeb5829af38d25` (M2.1 concluding green CI).
+- Checkpoint `af136ed7c08a147502471dd04faeb5829af38d25` (M2.1) → `a834bf5` (M3 implementation, pushed) → closing validation commit below (pushed, no force).
+- Branch `codex/windows-client` pushed normally to `origin` (no `--force`, no new branch). PR #1 stays **draft**. **No merge to `main`, no release, no upstream modification.**
+- Closing commit: (see `git log --oneline -3` — the commit after `a834bf5` titled `M3 validation: …`).
+- Working tree clean at delivery; `git status` verified before push and before commit.
 
 ## Architecture & decisions
 
@@ -50,19 +53,47 @@ Runtime: official Mistral Vibe Unified **2.26.1 frozen** (no upgrade, no paid cl
 - Real-engine: reused M2.1 evidence (loopback provider streaming/lifecycle, 3 concurrent subagents, approved file write, frozen `vibe-app-server.exe` probe). No hosted model calls, no cloud sessions, no Teleport E2E (account gate, declared).
 - Fixture: new pure + service tests above use local/loopback data only; never presented as hosted-model results.
 
-## Screenshots / CI / installer (honest residual)
+## Electron validation (real app + frozen Unified 2.26.1, no paid APIs)
 
-- **Not executed in this turn:** Playwright dev-app/packaged-app UI runs, fresh screenshots, NSIS packaging + SHA-256, GitHub Actions (both workflows). The renderer builds and all unit/integration gates pass locally, but M3 must not be declared fully accepted until: `npm run test:ui` (dev + packaged), screenshots (multi-session, 3 agents, worktree+sessions, directory picker, cloud preflight, picker, loops, Code/Work, editor handoff, themes, narrow), `npm run package` + packaged-app tests, and both CI workflows are green on the closing commit.
-- M2.1 evidence (`docs/screenshots/`, `docs/performance/`, `docs/m2.1-delivery.md`) remains the last full Electron/packaging record; no regression is claimed beyond comparability (same pool cap, bounded git/diff output, no duplicate polling added, listeners use explicit `off*` cleanup).
+- `desktop.spec` (dev): **PASS** 25.9 s — connect, local project, streaming + resume, both themes.
+- `expansion.spec` (dev): **PASS** 1.7 m and 3.7 m — Git/attribution/stage/commit/history/worktrees (creation hygiene + dirty-removal refusal), Files/preview, models, approvals, sessions, subagents.
+- `desktop.spec` (packaged `out/win-unpacked/Vibe Desktop.exe`): **PASS** 23.5 s.
+- `expansion.spec` (packaged): **PASS** 1.9 m, incl. the owned-processes-exit check.
+- Screenshots: **35 PNGs** regenerated in `docs/screenshots/` by the passing runs (worktrees, worktree-blocked, file/web preview, git-diff, subagents, dark/light, narrow, session, validation-error, attachments, context-tokens, MCP, models, providers, reasoning, skills, appearance-settings, approval-pending, home states).
+- Process cleanup: packaged expansion asserts all owned processes exit; no `Vibe Desktop.exe`/`vibe-app-server` processes linger after the runs (lingering `electron.exe` instances belong to an unrelated project and were left untouched).
+
+## Problems found & fixed (no lucky reruns)
+
+1. **Worktree-creation test gate broken by the new path preview (deterministic, 3/3 runs).** The M3 preview line (`Final path preview: …ui-created-branch`) satisfied the spec's `toContainText("ui-created-branch")` gate *before* the checkout existed, so the synchronous `git worktree list` assertion ran ~500 ms before `createWorktree` completed (main-process timing log proved completion at ~600 ms: overlap 44 ms, mutation incl. `worktree add` ~500 ms). Cause, not flake. Fix: gate the test on the explicit success notice (`Worktree created at`) + row — the true UX completion signal. File: `tests/ui/expansion.spec.ts`. Service/renderer code needed no change (direct-service and in-app IPC repros both passed).
+2. **Rapid tab-switch race in `openSession` (code defect, fixed).** Two overlapping `openSession` calls could let the slower one `adopt()` its stale session over the newer one (`pendingOpen` was write-only). Fix: per-call token, stale calls return before `adopt` (`src/renderer/App.tsx`).
+3. **Loop replace partial failure hid duplication (code defect, fixed).** If `loops/create` succeeded but `loops/delete` failed, the UI showed a bare error on a stale list — the duplicate was invisible. Fix: refresh the list and report explicitly that two loops now exist with an instruction to delete one (`src/renderer/LoopsPanel.tsx`).
+4. **Loaded-runner variance (not a bug, documented).** One dev-app run failed at `expect(overlay.visible).toBe(true)` (line 494, Windows shell/compositor state) and the pre-fix run executed a stale transform per the M2.1-noted cache hazard. Neither touches M3 code paths (titlebar code unchanged). Two subsequent full dev runs + both packaged runs are green; CI on a clean runner is the arbiter (see below).
+
+## GitHub Actions & installer
+
+- Workflow: `Windows build` (`.github/workflows/windows.yml`) on push + PR — build, `npm test`, frozen-backend probe, dev-app UI, NSIS packaging, packaged-app UI, SHA-256 + artifact upload.
+- Actions links for the closing SHA: push run + PR #1 run at `https://github.com/maikolsiragusaa/mistral-vibe-desktop/actions` (workflow `Windows build`, commit = closing SHA below). Both must be green; status recorded at push time + follow-up check (see Final commit & branch state).
+- Local installer: `out/Vibe-Desktop-0.3.0-x64-Setup.exe`, 157.2 MiB.
+- SHA-256: `1b4c26de5cbea75681fe0cb7427a5aee5488ee30cca14e5de054ad38f5e3df02` (unsigned, `NotSigned`, same posture as M2.1).
+- Note: `out/` also holds older local `0.1.0`/`0.2.0` setup exes from previous builds; CI builds on a clean runner where exactly one installer exists (enforced by the workflow step).
+
+## Cloud: verified vs official-surface-only
+
+- Verified locally: `projectLinks/list`, `vibeCode/projects/open` picker (incl. failure paths), Teleport preflight (Git repo, provider-record model, credentials), 5-stage lifecycle honesty (picker-open ≠ transfer-complete; no `confirmed` state without upstream evidence).
+- Official-surface-only (linked, never replicated): cloud project/session inventory, transfer request/confirmation, sandbox lifetime, GitHub persistence, tier/App verification, Work surfaces + scheduled tasks, `vibe-acp` sessions, quotas.
+- No cloud sessions created, no Teleport completed, no paid APIs used (account gate declared).
 
 ## Security analysis
 
 - No shell interpolation (`execFile`/`spawn` argv + stdin patch delivery); editor/custom-root paths length/character/absolute/UNC checked; `.exe/.cmd/.bat` allowlist for custom editor; traversal/`.git`/ADS rejected; realpath + inside() identity on every mutation; serialization per repo; ownership-first removal (occupied/unknown blocks); no `--force`/`reset --hard`/`clean -fd`; no credential retention (Vibe keyring custody); no `file://` grants; isolated preview/quota windows unchanged; IPC sender/scheme validated; external URLs allowlisted (Mistral HTTPS + project repo + validated `gh` PR links).
 - Limits: hostile-local TOCTOU outside the verified windows, external processes outside pool control, UNC refused (not transparently supported), volume/free-space reported as measured-or-unknown (no privileged disk API), `npm audit` covers JS tree only.
 
-## Performance
+## Performance (measured, same method as M2.1)
 
-- No new polling loops; worktree disk walk bounded (25 checkouts × 2000 files × depth 6); tab switch reuses canonical reads + cached drafts; loops/cloud panels fetch on open/refresh only; event forwarding unchanged. M2.1 numbers (≈3.3–3.8 s ready, ≈500 MiB combined working set, ≈0–0.6% idle core) remain the baseline; M3 adds no claimed improvement — re-measure with `docs/performance/` scripts during the Electron gate.
+- Dev-app runs: cold start 2712 / 3750 / 5078 ms (load variance), working set 494.8–509.4 MiB across 6 owned processes, idle CPU 0.00–5.41% of one core over ~5.5 s (`docs/performance/frozen.json`).
+- Packaged app: cold start **3103 ms** (M2.1: 3385 ms), working set **524.9 MiB** across 6 processes incl. `vibe-app-server` 131.5 MiB (M2.1: 528.7 MiB), idle CPU **0.29%** (M2.1: 0.28%) over 5.45 s (`docs/performance/packaged.json`).
+- Renderer bundle: 471.96 kB JS / 142.85 kB gzip (M2.1: ~430 kB / ~130 kB — small growth from tabs badges, lifecycle, replace, handoff UI).
+- Verdict: comparable to M2.1 in the same order; no improvement claimed beyond comparability. No new polling loops; disk walk bounded; tab switch reuses canonical reads + cached drafts; loops/cloud fetch on open/refresh only.
 
 ## Residual limits (account/upstream-dependent, declared as such)
 
@@ -71,7 +102,7 @@ Runtime: official Mistral Vibe Unified **2.26.1 frozen** (no upgrade, no paid cl
 - `loops/update|pause|resume` don't exist — replace is explicit and non-atomic.
 - Work tasks have no public local API.
 - Clean Windows 11 install/uninstall, DPI/snap/Mica on Win11, hosted entitlement/model quality, live browser sign-in, connector OAuth, registry browsing, quota rendering remain external checks.
-- UI e2e + packaging + CI + fresh screenshots pending (see above).
+- Local `out/` keeps older setup exes (see installer note); `npm audit` covers the JS tree only; free-space reporting stays measured-or-unknown (no privileged disk API).
 
 ## Upstream proposals (no issue filed automatically)
 
@@ -79,6 +110,7 @@ Runtime: official Mistral Vibe Unified **2.26.1 frozen** (no upgrade, no paid cl
 - `loops/update|pause` or documented non-goal; `mcp` source-layer reporting (applied layer + effective state); nullable measurement fields for stats/context.
 - Worktask read API or documented non-goal (desktop will keep linking, not mirroring).
 
-## M4 recommendation
+## M4 recommendation (M3 gates executed; do not start M4 here)
 
-- Run the pending Electron/packaging/CI gates first; then consider: skill-registry lifecycle GUI (backend already validates), stdio-MCP structured editor, multi-root project catalog polish, transcript virtualization measurement, and (only with explicit demand + security design) any unattended story per the ADR.
+- Keep: skill-registry lifecycle GUI (backend already validates), stdio-MCP structured editor, multi-root catalog polish, transcript virtualization measurement, unattended story only per ADR with explicit demand + security design.
+- First: confirm both CI runs green on the closing SHA; keep PR #1 draft with no merge/release.

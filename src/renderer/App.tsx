@@ -859,7 +859,11 @@ export function App() {
   ) => {
     if (status.state !== "ready")
       throw new Error("Connect the Vibe engine first.");
-    pendingOpen.current = { cwd, sessionId };
+    // Race guard for rapid tab switches: only the newest openSession may
+    // adopt its result. A slower earlier call returns stale without touching
+    // the current session, draft, panel or pending state.
+    const myOpen = { cwd, sessionId };
+    pendingOpen.current = myOpen;
     if (stateRef.current) {
       sessionDrafts.current.set(stateRef.current.session.id, draft);
       attachmentDrafts.current.set(stateRef.current.session.id, attachments);
@@ -917,6 +921,7 @@ export function App() {
         ? { sessionId, agentConfig: { cwd } }
         : { agentConfig: { cwd, ...(mode ? { agent: mode } : {}) } },
     );
+    if (pendingOpen.current !== myOpen) return;
     if (!trustResult.details) pendingOpen.current = null;
     adopt(result.state);
     if (pendingModel) {

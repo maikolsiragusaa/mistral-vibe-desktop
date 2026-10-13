@@ -145,18 +145,29 @@ export function LoopsPanel({ sessionId, backendActive, disabled, onClose }: Prop
     setMutating(replacingId);
     setError("");
     setNotice("");
+    let created = false;
     try {
       await bridge.request("loops/create", {
         sessionId,
         interval: plan.interval,
         prompt: plan.prompt,
       });
+      created = true;
       await bridge.request("loops/delete", { sessionId, loopId: plan.oldId });
       setReplacingId(null);
       setNotice("Loop replaced: the new schedule was validated before the old one was removed.");
       await refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      // A failed delete after a successful create leaves TWO loops behind.
+      // Never confirm success: refresh so both rows are visible and say so.
+      if (created) {
+        await refresh().catch(() => {});
+        setError(
+          `Replacement created, but the original loop was NOT removed (${e instanceof Error ? e.message : String(e)}). Two loops now exist — delete one explicitly.`,
+        );
+      } else {
+        setError(e instanceof Error ? e.message : String(e));
+      }
     } finally {
       setMutating(null);
     }

@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.3.0-M2.1 — Stabilization, worktree architecture & Windows validation (unreleased baseline 0.3.0)
+
+Red-CI-driven hardening of M2 (`a1a2fbd` broke both Windows Actions on the
+obsolete read-only-worktrees assertion). No new harness, no stack change.
+
+- CI: diagnosed the deterministic failure, replaced the stale assertion with
+  real manager coverage (open, state, actions) plus creation-hygiene,
+  removal-gate, Files/preview, mid-turn navigation, selection-preservation
+  and five-tab render checks. Both Playwright specs pass on the real
+  Electron app against harness 2.26.1.
+- Worktree location (P0-A): creation moved out of the checkout into the
+  app-managed space `userData/worktrees/<slug>-<sha1>[:12]/<name>`. The main
+  repository never becomes dirty from a new checkout; `.gitignore` untouched;
+  existing worktrees keep working; no auto-migration.
+- Ownership (P0-B): `VibeBackendPool.describeWorktreeUsage()` exposes a
+  frozen read-only snapshot (session, worker, active turn, subagents, lease,
+  callbacks). Removal blocks on occupied or unverifiable checkouts with
+  reasons; UI shows Occupied/Idle/Available/Unknown, session chips and direct
+  session opening. External processes remain undetectable by design.
+- Preview (P0-C): the iframe is replaced by a dedicated isolated window
+  (separate partition, sandbox, no preload/Node) with loopback-only initial
+  URLs and same-origin redirect/navigation guards. Adversarial tests plus
+  live Electron proof (no bridge/Node inside, public redirect ends blocked).
+- Git audit: per-repository mutation serialization; hunk staging refuses
+  renames/deletions whole-file; identical-header twins apply deterministically
+  then go stale; blocked-preview `loadURL` no longer hangs IPC.
+- Architecture: `GitWorkspace.tsx` split into `git-types.ts`, `git-api.ts`
+  and five panel modules; orchestrator keeps state/effects. No duplicated
+  logic, no new framework.
+- Suite: 120 tests passing (was 112). Build and `npm audit` clean.
+  Screenshots refreshed in `docs/screenshots/`. Residual: CI must confirm
+  NSIS packaging, packaged-app tests and SHA-256 on the final commit.
+
 ## 0.3.0-M2 — Git, worktrees & development workspace (unreleased baseline 0.3.0)
 
 M2 turns Vibe Desktop into a working development workspace on the official

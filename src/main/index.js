@@ -16,6 +16,7 @@ import { GitWorkspaceService } from "./git-service.js";
 import { BrowserAuthService } from "./browser-auth.js";
 import { PreviewWindowService } from "./preview-window.js";
 import { EditorService } from "./editor-service.js";
+import { McpConfigService } from "./mcp-config-service.js";
 import { Notification } from "electron";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
@@ -42,6 +43,7 @@ let gitWorkspace = null;
 let browserAuth = null;
 let localPreview = null;
 let editorService = null;
+let mcpConfigService = null;
 const gitLinks = new Set();
 const authLinks = new Map();
 let quitting = false;
@@ -174,6 +176,10 @@ function installIpc() {
   handle("vibe:editor:detect-acp", () => editorService.detectAcp());
   handle("vibe:editor:open", (input) => editorService.open(input ?? {}));
   handle("vibe:editor:open-terminal", (input) => editorService.openTerminal(input ?? {}));
+  handle("vibe:mcp:describe", (sessionId) => mcpConfigService.describe(sessionId));
+  handle("vibe:mcp:mutate", (sessionId, intent) =>
+    mcpConfigService.mutate(sessionId, intent),
+  );
   handle("vibe:preferences:read", () => backend.readPreferences());
   handle("vibe:preferences:save", (preferences) =>
     backend.savePreferences(preferences),
@@ -439,6 +445,9 @@ async function startApp() {
   });
   editorService = new EditorService({
     authorizeProjectRoot: (cwd) => backend.authorizeProjectRoot(cwd),
+  });
+  mcpConfigService = new McpConfigService({
+    request: (method, params) => backend.request(method, params),
   });
   localPreview = new PreviewWindowService({
     createWindow: (options) => new BrowserWindow(options),

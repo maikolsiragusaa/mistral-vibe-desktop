@@ -169,6 +169,16 @@ export interface VibeBridge {
   previewOpen(url: string): Promise<{ url: string }>;
   previewReload(): Promise<{ url: string }>;
   previewClose(): Promise<void>;
+  mcpDescribe?(sessionId: string): Promise<{
+    servers: import("./resources/mcp-mutation-types").RedactedMcpServer[];
+    revision: string;
+    targetLayer: string;
+    targets: string[];
+  }>;
+  mcpMutate?(
+    sessionId: string,
+    intent: import("./resources/mcp-mutation-types").McpMutationIntent,
+  ): Promise<import("./resources/mcp-mutation-types").McpMutationResult>;
 }
 declare global {
   interface Window {

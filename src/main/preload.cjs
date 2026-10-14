@@ -39,5 +39,8 @@ contextBridge.exposeInMainWorld(
     previewOpen: (url) => ipcRenderer.invoke("vibe:preview-open", url),
     previewReload: () => ipcRenderer.invoke("vibe:preview-reload"),
     previewClose: () => ipcRenderer.invoke("vibe:preview-close"),
+    mcpDescribe: (sessionId) => ipcRenderer.invoke("vibe:mcp:describe", sessionId),
+    mcpMutate: (sessionId, intent) =>
+      ipcRenderer.invoke("vibe:mcp:mutate", sessionId, intent),
   }),
 );

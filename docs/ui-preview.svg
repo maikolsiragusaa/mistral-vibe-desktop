@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1360" height="850" viewBox="0 0 1360 850">
+<style>text{font-family:Segoe UI,Arial,sans-serif;fill:#25221e}.muted{fill:#71695f}.small{font-size:12px}.label{font-size:11px;letter-spacing:1.2px}.body{font-size:14px}.title{font-size:18px;font-weight:600}</style>
+<rect width="1360" height="850" fill="#fffaf4"/><rect width="238" height="850" fill="#f5efe6"/>
+<path d="M238 0V850M1060 70V850M238 70H1360" stroke="#ded6cb"/>
+<path d="M24 26h8v-8h8v8h8v8H24z" fill="#e95b21"/><text x="60" y="32" class="title">Vibe Desktop</text>
+<text x="24" y="65" class="small muted">COMMUNITY · WINDOWS</text>
+<rect x="18" y="96" width="202" height="38" rx="5" fill="#ffead9"/><text x="33" y="120" class="body">＋ Open project</text>
+<text x="24" y="179" class="label muted">YOUR PROJECTS</text><text x="24" y="214" class="small muted">Your local work starts here.</text>
+<path d="M18 754H220" stroke="#ded6cb"/><text x="26" y="786" class="body">Settings</text><text x="26" y="822" class="small muted">Vibe engine · connection status</text>
+<text x="268" y="31" class="body">Workspace</text><text x="268" y="53" class="small muted">Choose a local project to begin</text>
+<text x="1230" y="43" class="small muted">Light theme</text>
+<text x="1090" y="110" class="label">WORKSPACE</text><text x="1090" y="153" class="body">Activity</text><text x="1090" y="195" class="small muted">Agent operations appear here.</text>
+<path d="M1090 232H1330" stroke="#ded6cb"/><text x="1090" y="270" class="small muted">One engine. Your workspace.</text>
+<text x="1090" y="300" class="small muted">Sessions, tools and permissions</text><text x="1090" y="320" class="small muted">run through Mistral Vibe.</text>
+<path d="M576 228h30v-30h30v30h30v30h-90z" fill="#ffb97b"/><path d="M606 228h30v30h-30z" fill="#e95b21"/>
+<text x="650" y="328" text-anchor="middle" font-size="38" font-weight="500">Make room for good code.</text>
+<text x="650" y="366" text-anchor="middle" class="body muted">Your local projects. Mistral's coding engine. One focused workspace.</text>
+<rect x="552" y="399" width="196" height="42" rx="5" fill="#c04414"/><text x="650" y="426" text-anchor="middle" font-size="14" fill="white" style="fill:white">Open a project  ↗</text>
+<text x="650" y="474" text-anchor="middle" class="small muted">Ctrl+O · Open project</text>
+<rect x="316" y="620" width="668" height="135" rx="10" fill="#fff" stroke="#ded6cb"/>
+<text x="336" y="653" class="body muted">Describe what you want to build, explore or fix…</text><path d="M334 699H966" stroke="#ded6cb"/>
+<text x="336" y="730" class="small">Ask before tools</text><text x="504" y="730" class="small muted">Model from Vibe</text>
+<rect x="926" y="713" width="38" height="27" rx="5" fill="#ffead9"/><text x="945" y="733" text-anchor="middle">↑</text>
+<text x="650" y="787" text-anchor="middle" class="small muted">Community-made. Powered by the official Mistral Vibe engine.</text>
+<text x="258" y="832" class="small muted">Layout preview · empty workspace · no simulated agent output</text>
+</svg>

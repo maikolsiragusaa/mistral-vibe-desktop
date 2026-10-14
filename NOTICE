@@ -1,0 +1,7 @@
+Copyright 2026 Vibe Desktop contributors.
+
+Vibe Desktop includes the official `mistral-vibe` Python distribution, version 2.26.1, Copyright 2025 Mistral AI, licensed under Apache License 2.0. The upstream source is available at https://github.com/mistralai/mistral-vibe. The frozen app server is built from the PyPI wheel and reports its upstream commit and source-helper hashes in `build-metadata.json`.
+
+The upstream app-server implementation is not forked or copied into this repository. Vibe Desktop supplies a small launcher and adapts resource paths in the upstream PyInstaller spec so that it freezes the installed wheel. The optional Textual TUI speedups are disabled and excluded from the headless app-server bundle.
+
+Vibe Desktop is an independent community project and is not affiliated with, endorsed by, or an official product of Mistral AI. Mistral and Vibe are names belonging to their respective owners.

@@ -88,27 +88,6 @@ export interface ConfigField {
   layerValues?: ConfigLayerValue[];
 }
 
-export interface StdioServerDraft {
-  name: string;
-  command: string;
-  args: string[];
-  cwd: string;
-  env: Array<{ key: string; value: string }>;
-  disabled: boolean;
-}
-
-export interface McpServerRecord {
-  name: string;
-  transport?: string;
-  url?: string;
-  command?: string;
-  args?: string[];
-  env?: Record<string, string>;
-  cwd?: string | null;
-  disabled?: boolean;
-  prompt?: string;
-}
-
 export interface CapabilityState {
   configured: boolean;
   enabled: boolean;

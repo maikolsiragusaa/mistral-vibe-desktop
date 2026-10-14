@@ -29,6 +29,11 @@ import { StdioMcpDialog } from "./resources/StdioMcpDialog";
 import { ToolsInspector } from "./resources/ToolsInspector";
 import { LayerInspector } from "./resources/LayerInspector";
 import { AcpPanel } from "./resources/AcpPanel";
+import { describeMcpLayer, mutateMcpLayer } from "./resources/mcp-config-client";
+import type {
+  McpLayerSnapshot,
+  McpMutationResult,
+} from "./resources/mcp-mutation-types";
 
 type ResourceTab =
   "mcp" | "skills" | "plugins" | "providers" | "diagnostics" | "usage";
@@ -447,9 +452,9 @@ export function ResourcesWorkspace({
   const [pluginFilter, setPluginFilter] = useState("");
   const [skillUpdates, setSkillUpdates] = useState<AnyRecord>({});
   const [stdioOpen, setStdioOpen] = useState(false);
-  const [stdioEditing, setStdioEditing] = useState<AnyRecord | null>(null);
-  const [mcpLayerServers, setMcpLayerServers] = useState<AnyRecord[]>([]);
-  const [mcpTargetLayer, setMcpTargetLayer] = useState("");
+  const [stdioEditingName, setStdioEditingName] = useState<string | null>(null);
+  const [mcpSnapshot, setMcpSnapshot] = useState<McpLayerSnapshot | null>(null);
+  const [pendingStdioRemove, setPendingStdioRemove] = useState<string | null>(null);
   const previousFocus = useRef<HTMLElement | null>(null);
 
   const request = useCallback(
@@ -540,43 +545,13 @@ export function ResourcesWorkspace({
     ]);
     setConfig(configFromEffective(effective));
     setConfigFields(cleanConfigFields(fields));
-    // Authoritative per-layer MCP values for the stdio editor + layer view.
-    // Uses config/fields layerValues (per-layer), never a redacted merge.
+    // Redacted authoritative snapshot for the stdio editor + layer view.
+    // Existing env values never enter renderer state; the main-process
+    // mutation service owns the raw values and all writes.
     try {
-      const rawFields =
-        isRecord(fields) && Array.isArray(fields.fields) ? fields.fields : [];
-      const mcpField = rawFields.find(
-        (field: unknown) => isRecord(field) && field.name === "mcp_servers",
-      );
-      const layerValues =
-        isRecord(mcpField) && Array.isArray(mcpField.layerValues)
-          ? mcpField.layerValues.filter(isRecord)
-          : [];
-      const targets =
-        isRecord(fields) && Array.isArray(fields.targets)
-          ? fields.targets.filter(
-              (item: unknown): item is string => typeof item === "string",
-            )
-          : [];
-      const writable = layerValues.find(
-        (entry) =>
-          typeof entry.layer === "string" &&
-          targets.includes(entry.layer) &&
-          Array.isArray(entry.value),
-      );
-      const fallback = layerValues.find((entry) => Array.isArray(entry.value));
-      const chosen = writable ?? fallback;
-      setMcpTargetLayer(
-        typeof chosen?.layer === "string" ? (chosen.layer as string) : "",
-      );
-      setMcpLayerServers(
-        Array.isArray(chosen?.value)
-          ? (chosen.value as unknown[]).filter(isRecord).map((item) => ({ ...(item as AnyRecord) }))
-          : [],
-      );
+      setMcpSnapshot(await describeMcpLayer(sessionId));
     } catch {
-      setMcpLayerServers([]);
-      setMcpTargetLayer("");
+      setMcpSnapshot(null);
     }
   }, [request, sessionId]);
 
@@ -666,10 +641,10 @@ export function ResourcesWorkspace({
     setAccount(null);
     setAuthLinks([]);
     setSkillUpdates({});
-    setMcpLayerServers([]);
-    setMcpTargetLayer("");
+    setMcpSnapshot(null);
     setStdioOpen(false);
-    setStdioEditing(null);
+    setStdioEditingName(null);
+    setPendingStdioRemove(null);
     if (!sessionId)
       return () => {
         live = false;
@@ -971,42 +946,21 @@ export function ResourcesWorkspace({
           );
           if ((current?.status === "disabled") !== !disabledNow) {
             // The upstream catalog toggle edits its default persistence layer.
-            // A project declaration can shadow it; edit only that layer's leaf
-            // through Vibe's configuration API, leaving credentials untouched.
-            const fields = await request("config/fields/read", { sessionId });
-            const field = fields.fields?.find(
-              (item: AnyRecord) => item.name === "mcp_servers",
-            );
-            const layer = field?.layerValues?.find(
-              (entry: AnyRecord) =>
-                fields.targets?.includes(entry.layer) &&
-                Array.isArray(entry.value) &&
-                entry.value.some(
-                  (server: AnyRecord) => server.name === source.name,
-                ),
-            );
-            const index = layer?.value.findIndex(
-              (server: AnyRecord) => server.name === source.name,
-            );
-            if (!layer || index < 0)
-              throw new Error(
-                "Vibe did not persist this change. No writable source layer was exposed.",
-              );
-            applyRuntime(
-              await request("config/write", {
-                sessionId,
-                ops: [
-                  {
-                    op: "set",
-                    path: `/mcp_servers/${index}/disabled`,
-                    value: !disabledNow,
-                    targetLayer: layer.layer,
-                  },
-                ],
-                reloadRuntime: true,
-              }),
-            );
-            applyRuntime(await request("mcp_catalog/refresh", { sessionId }));
+            // A project declaration can shadow it; route the override through
+            // the single MCP mutation service, which re-reads the owning
+            // layer, writes only the disabled leaf and verifies the result.
+            const sid = sessionId;
+            if (!sid) throw new Error("Select or open a Vibe session before managing resources.");
+            const snapshot = await describeMcpLayer(sid);
+            setMcpSnapshot(snapshot);
+            const outcome = await mutateMcpLayer(sid, {
+              op: "enable",
+              name: String(source.name),
+              expectedRevision: snapshot.revision,
+              disabled: !disabledNow,
+            });
+            reportMutationResult(outcome, "toggle");
+            await request("mcp_catalog/refresh", { sessionId }).catch(() => undefined);
             await readMcp();
             const verified = await request("mcp_catalog/read", { sessionId });
             if (
@@ -1124,46 +1078,47 @@ export function ResourcesWorkspace({
     );
   };
 
-  const removeStdioServer = async (server: AnyRecord) => {
-    const name = String(server.name ?? "");
-    if (!name) return;
-    await runAction(
-      "remove-stdio:" + name,
-      async () => {
-        if (!mcpTargetLayer) throw new Error("No writable config layer was exposed.");
-        const next = mcpLayerServers.filter((entry) => String(entry.name) !== name);
-        const serialised = next.map((entry) => {
-          const out: AnyRecord = { name: entry.name };
-          if (entry.transport) out.transport = entry.transport;
-          if (entry.url) out.url = entry.url;
-          if (entry.command) out.command = entry.command;
-          if (entry.args) out.args = entry.args;
-          if (entry.env) out.env = entry.env;
-          if (entry.cwd) out.cwd = entry.cwd;
-          if (typeof entry.disabled === "boolean") out.disabled = entry.disabled;
-          return out;
-        });
-        await request("config/write", {
-          sessionId,
-          ops: [{ op: "set", path: "/mcp_servers", value: serialised, targetLayer: mcpTargetLayer }],
-          reason: "remove stdio MCP server",
-          reloadRuntime: true,
-        });
-        await request("mcp_catalog/refresh", { sessionId }).catch(() => undefined);
-        await readProviderConfig();
-        await readMcp();
-        const readback = await request("config/fields/read", { sessionId });
-        const fieldsRaw = isRecord(readback) && Array.isArray(readback.fields) ? readback.fields : [];
-        const field = fieldsRaw.find((item: unknown) => isRecord(item) && item.name === "mcp_servers");
-        const layers = isRecord(field) && Array.isArray(field.layerValues) ? field.layerValues : [];
-        const layer = layers.find((entry: unknown) => isRecord(entry) && entry.layer === mcpTargetLayer);
-        const values = isRecord(layer) && Array.isArray(layer.value) ? layer.value : [];
-        if (values.some((entry: unknown) => isRecord(entry) && entry.name === name))
-          throw new Error("Vibe still lists this server after removal.");
-        return values;
-      },
-      "Stdio server removed.",
-    );
+  const applyMutationResult = (result: McpMutationResult) => {
+    setMcpSnapshot({
+      servers: result.servers,
+      revision: result.revision,
+      targetLayer: result.targetLayer,
+      targets: mcpSnapshot?.targets ?? [],
+    });
+  };
+
+  const reportMutationResult = (result: McpMutationResult, verb: string) => {
+    applyMutationResult(result);
+    if (result.outcome === "applied-verified" || result.outcome === "pending-reload") {
+      setNotice(result.message);
+      void readMcp();
+    } else {
+      setError(result.message);
+      onError?.(result.message);
+    }
+    return result;
+  };
+
+  const removeStdioServer = async (name: string) => {
+    if (!name || !sessionId) return;
+    setError("");
+    setNotice("");
+    setBusy("remove-stdio:" + name);
+    try {
+      const result = await mutateMcpLayer(sessionId, {
+        op: "remove",
+        name,
+        expectedRevision: mcpSnapshot?.revision ?? null,
+      });
+      reportMutationResult(result, "remove");
+      setPendingStdioRemove(null);
+    } catch (cause) {
+      const message = getErrorMessage(cause);
+      setError(message);
+      onError?.(message);
+    } finally {
+      setBusy("");
+    }
   };
 
   const refreshSkillsAndUpdates = async () => {
@@ -1675,7 +1630,7 @@ export function ResourcesWorkspace({
                       type="button"
                       className="rw-button rw-secondary"
                       onClick={() => {
-                        setStdioEditing(null);
+                        setStdioEditingName(null);
                         openDialog(setStdioOpen);
                       }}
                       disabled={busyOrDisabled}
@@ -1928,20 +1883,18 @@ export function ResourcesWorkspace({
                   Usable means tools are actually announced — these states are not the same.
                 </div>
                 <LayerInspector
-                  targets={configFields.targets}
-                  fields={(() => {
-                    const raw = mcpLayerServers;
-                    return [
-                      {
-                        name: "mcp_servers",
-                        layerValues: mcpTargetLayer
-                          ? [{ layer: mcpTargetLayer, value: raw }]
+                  targets={mcpSnapshot?.targets ?? configFields.targets}
+                  fields={[
+                    {
+                      name: "mcp_servers",
+                      layerValues:
+                        mcpSnapshot && mcpSnapshot.targetLayer
+                          ? [{ layer: mcpSnapshot.targetLayer, value: mcpSnapshot.servers }]
                           : [],
-                      },
-                    ];
-                  })()}
+                    },
+                  ]}
                 />
-                {mcpLayerServers.filter(
+                {(mcpSnapshot?.servers ?? []).filter(
                   (server) => server.transport === "stdio" || server.command,
                 ).length > 0 && (
                   <section className="rw-stdio-list" aria-label="Local stdio servers">
@@ -1949,18 +1902,19 @@ export function ResourcesWorkspace({
                       Local stdio servers{" "}
                       <span>
                         {
-                          mcpLayerServers.filter(
+                          (mcpSnapshot?.servers ?? []).filter(
                             (server) => server.transport === "stdio" || server.command,
                           ).length
                         }
                       </span>
                     </h3>
                     <p className="rw-note">
-                      Managed through the official config/mcp_servers layer ({mcpTargetLayer || "unknown"}).
+                      Managed through the official config/mcp_servers layer ({mcpSnapshot?.targetLayer || "unknown"}).
                       Editing never executes the command — validation is syntactic; connection follows on refresh.
+                      Only changed fields are written; everything else is preserved and verified.
                     </p>
                     <div className="rw-card-list">
-                      {mcpLayerServers
+                      {(mcpSnapshot?.servers ?? [])
                         .filter((server) => server.transport === "stdio" || server.command)
                         .map((server) => (
                           <article className="rw-card" key={String(server.name)}>
@@ -1971,9 +1925,10 @@ export function ResourcesWorkspace({
                               </span>
                             </div>
                             <small className="rw-note">
-                              {String(server.command ?? "")}{" "}
+                              {typeof server.command === "string" ? server.command : ""}{" "}
                               {Array.isArray(server.args) ? server.args.join(" ") : ""}
-                              {server.cwd ? ` · cwd ${String(server.cwd)}` : ""}
+                              {typeof server.cwd === "string" ? ` · cwd ${server.cwd}` : ""}
+                              {server.envConfigured ? ` · ${server.envKeys.length} env var(s) configured` : ""}
                             </small>
                             <footer className="rw-card-footer">
                               <button
@@ -1981,20 +1936,41 @@ export function ResourcesWorkspace({
                                 className="rw-button rw-secondary rw-small"
                                 disabled={busyOrDisabled}
                                 onClick={() => {
-                                  setStdioEditing(server);
+                                  setStdioEditingName(String(server.name));
                                   openDialog(setStdioOpen);
                                 }}
                               >
                                 Edit stdio server
                               </button>
-                              <button
-                                type="button"
-                                className="rw-button rw-secondary rw-small"
-                                disabled={busyOrDisabled}
-                                onClick={() => void removeStdioServer(server)}
-                              >
-                                Remove stdio server
-                              </button>
+                              {pendingStdioRemove === String(server.name) ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    className="rw-button rw-danger rw-small"
+                                    disabled={busyOrDisabled}
+                                    onClick={() => void removeStdioServer(String(server.name))}
+                                  >
+                                    Confirm remove
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="rw-button rw-secondary rw-small"
+                                    disabled={busyOrDisabled}
+                                    onClick={() => setPendingStdioRemove(null)}
+                                  >
+                                    Keep
+                                  </button>
+                                </>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="rw-button rw-secondary rw-small"
+                                  disabled={busyOrDisabled}
+                                  onClick={() => setPendingStdioRemove(String(server.name))}
+                                >
+                                  Remove stdio server
+                                </button>
+                              )}
                             </footer>
                           </article>
                         ))}
@@ -3098,47 +3074,22 @@ export function ResourcesWorkspace({
           >
             <StdioMcpDialog
               sessionId={sessionId}
-              existing={
-                stdioEditing
-                  ? {
-                      name: String(stdioEditing.name ?? ""),
-                      transport: typeof stdioEditing.transport === "string" ? stdioEditing.transport : "stdio",
-                      command: typeof stdioEditing.command === "string" ? stdioEditing.command : "",
-                      args: Array.isArray(stdioEditing.args)
-                        ? (stdioEditing.args as unknown[]).filter((a): a is string => typeof a === "string")
-                        : [],
-                      env:
-                        stdioEditing.env !== null && typeof stdioEditing.env === "object" && !Array.isArray(stdioEditing.env)
-                          ? (stdioEditing.env as Record<string, string>)
-                          : {},
-                      cwd: typeof stdioEditing.cwd === "string" ? stdioEditing.cwd : null,
-                      disabled: stdioEditing.disabled === true,
-                    }
-                  : null
-              }
-              servers={mcpLayerServers.map((server) => ({
-                name: String(server.name ?? ""),
-                transport: typeof server.transport === "string" ? server.transport : undefined,
-                url: typeof server.url === "string" ? server.url : undefined,
-                command: typeof server.command === "string" ? server.command : undefined,
-                args: Array.isArray(server.args)
-                  ? (server.args as unknown[]).filter((a): a is string => typeof a === "string")
-                  : undefined,
-                env:
-                  server.env !== null && typeof server.env === "object" && !Array.isArray(server.env)
-                    ? (server.env as Record<string, string>)
-                    : undefined,
-                cwd: typeof server.cwd === "string" ? server.cwd : null,
-                disabled: server.disabled === true,
-              }))}
-              targetLayer={mcpTargetLayer}
+              snapshot={mcpSnapshot}
+              existingName={stdioEditingName}
               onClose={() => closeDialog(setStdioOpen)}
-              request={request}
-              refresh={async () => {
-                await readProviderConfig();
-                await readMcp();
+              onDone={(result) => {
+                if (result.outcome === "applied-verified" || result.outcome === "pending-reload") {
+                  reportMutationResult(result, "save");
+                  closeDialog(setStdioOpen);
+                  setStdioEditingName(null);
+                } else {
+                  // Refresh the baseline (conflict carries the fresh
+                  // snapshot) and keep the dialog open for review + retry.
+                  applyMutationResult(result);
+                  setError(result.message);
+                  onError?.(result.message);
+                }
               }}
-              onSaved={(message) => setNotice(message)}
               onError={(message) => {
                 setError(message);
                 onError?.(message);

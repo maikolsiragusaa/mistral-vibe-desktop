@@ -1180,6 +1180,62 @@
 .rw-tools .rw-tool-row {
   align-items: flex-start;
 }
+.rw-env {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+.rw-env-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.rw-env-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: var(--rail);
+  font-size: 10px;
+  flex-wrap: wrap;
+}
+.rw-env-key {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.rw-env-key code {
+  font: 10px/1.5 var(--code);
+}
+.rw-env-key small {
+  color: var(--muted);
+}
+.rw-env-replace {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.rw-env-replace input,
+.rw-env-add input {
+  font-size: 11px;
+  padding: 6px 8px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--bg, inherit);
+  color: inherit;
+}
+.rw-env-add {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
 .rw-tool-desc {
   display: block;
   color: var(--muted);

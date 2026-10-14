@@ -970,6 +970,18 @@ test("real desktop keeps Git, configured models, approvals and sessions grounded
     await capture(page, "model-glm-5-3");
     await modelOption.click();
     await expect(modelDialog).toHaveCount(0);
+    // Wait for the authoritative runtime state, not just the write receipt:
+    // on slower hosts the picker only updates once runtime/read confirms the
+    // applied model. The alias must match exactly — no fallback version.
+    await page.waitForFunction(
+      async (sessionId) => {
+        const bridge = (window as any).vibe;
+        const read = await bridge.request("runtime/read", { sessionId });
+        return read?.runtime?.config?.activeModel?.alias === "glm-5.3";
+      },
+      firstLongSession,
+      { timeout: 15_000, polling: 500 },
+    );
     await expect(
       page.getByRole("button", { name: /^Model: GLM 5\.3$/ }),
     ).toBeVisible();

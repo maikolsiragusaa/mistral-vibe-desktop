@@ -692,7 +692,7 @@ export function GitWorkspace({
         file: file ?? null,
         line: line ?? null,
       });
-      setNotice("Workspace opened in the editor (files only — the agent session stays here).");
+      setNotice("Editor process started (files only — the agent session stays here).");
     } catch (reason) {
       reportError(errorMessage(reason));
     }
@@ -705,6 +705,7 @@ export function GitWorkspace({
     }
     try {
       await window.vibe.editorOpenTerminal({ folder });
+      setNotice("Terminal process started in the workspace folder.");
     } catch (reason) {
       reportError(errorMessage(reason));
     }

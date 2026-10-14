@@ -132,6 +132,41 @@ test("config/write rejects stdio shell strings, bad names, UNC cwd and mixed sha
   );
 });
 
+test("config/write allows token-named env keys only inside mcp_servers env", async (t) => {
+  const { backend, sessionId } = await createBackend(t);
+  await backend.request("config/write", {
+    sessionId,
+    ops: [
+      {
+        op: "set",
+        path: "/mcp_servers",
+        value: [
+          {
+            name: "token-env",
+            transport: "stdio",
+            command: "server.exe",
+            env: { GITHUB_TOKEN: "fixture-value", PLAIN: "x" },
+          },
+        ],
+      },
+    ],
+  });
+  await assert.rejects(
+    backend.request("config/write", {
+      sessionId,
+      ops: [{ op: "set", path: "/mcp_servers/0/headers", value: { Authorization: "secret" } }],
+    }),
+    /not editable/,
+  );
+  await assert.rejects(
+    backend.request("config/write", {
+      sessionId,
+      ops: [{ op: "set", path: "/providers/0/extra_token", value: "secret" }],
+    }),
+    /not editable|cannot contain credential/,
+  );
+});
+
 test("config/write still rejects credential-bearing MCP fields", async (t) => {
   const { backend, sessionId } = await createBackend(t);
   await assert.rejects(

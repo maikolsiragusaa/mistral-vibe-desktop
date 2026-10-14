@@ -382,6 +382,50 @@ export function App() {
       setWorking(false);
     }
   };
+  // Model selection is confirmed against the authoritative runtime state,
+  // not just the write receipt: on slower hosts the write response can
+  // predate the applied model, which previously left the picker showing a
+  // stale value with no further refresh scheduled.
+  const writeModelAndConfirm = useCallback(
+    async (sessionId: string, modelAlias: string, reasoningEffort?: string) => {
+      const write = await request<any>("config/model/write", {
+        sessionId,
+        modelAlias,
+        ...(reasoningEffort ? { reasoningEffort } : {}),
+      });
+      if (write?.runtime && stateRef.current?.session.id === sessionId)
+        setRuntime(write.runtime);
+      const deadline = Date.now() + 10_000;
+      let latest: Runtime | null = (write?.runtime as Runtime | undefined) ?? null;
+      for (;;) {
+        const read = await request<{ runtime: Runtime }>("runtime/read", {
+          sessionId,
+        });
+        latest = read.runtime;
+        const active = (latest as unknown as Record<string, unknown> | null)
+          ?.config as Record<string, unknown> | undefined;
+        const activeModel = active?.activeModel as Record<string, unknown> | undefined;
+        const aliasMatches = activeModel?.alias === modelAlias;
+        const effortMatches =
+          reasoningEffort === undefined || activeModel?.thinking === reasoningEffort;
+        if (aliasMatches && effortMatches) {
+          if (stateRef.current?.session.id === sessionId) setRuntime(latest);
+          return { confirmed: true as const };
+        }
+        if (Date.now() > deadline || stateRef.current?.session.id !== sessionId)
+          break;
+        await new Promise((resolve) => setTimeout(resolve, 400));
+      }
+      if (stateRef.current?.session.id === sessionId) {
+        if (latest) setRuntime(latest);
+        setNotice(
+          "The model change was accepted but the runtime has not confirmed it yet. It will appear once Vibe applies it.",
+        );
+      }
+      return { confirmed: false as const };
+    },
+    [request],
+  );
   const listSessions = useCallback(async () => {
     const result = await request<{ items: Session[] }>("session/list", {
       limit: 100,
@@ -925,14 +969,13 @@ export function App() {
     if (!trustResult.details) pendingOpen.current = null;
     adopt(result.state);
     if (pendingModel) {
-      await request("config/model/write", {
-        sessionId: result.state.session.id,
-        modelAlias: pendingModel.alias,
-        ...(pendingModel.reasoning
-          ? { reasoningEffort: pendingModel.reasoning }
-          : {}),
-      });
+      const pending = pendingModel;
       setPendingModel(null);
+      await writeModelAndConfirm(
+        result.state.session.id,
+        pending.alias,
+        pending.reasoning,
+      );
     }
     setDraft(
       sessionDrafts.current.get(result.state.session.id) ||
@@ -2561,15 +2604,11 @@ export function App() {
                     disabled={!state || working || running}
                     onSelect={(modelAlias, reasoningEffort) =>
                       protect(async () => {
-                        const result = await request<any>(
-                          "config/model/write",
-                          {
-                            sessionId: state!.session.id,
-                            modelAlias,
-                            ...(reasoningEffort ? { reasoningEffort } : {}),
-                          },
+                        await writeModelAndConfirm(
+                          state!.session.id,
+                          modelAlias,
+                          reasoningEffort,
                         );
-                        setRuntime(result.runtime);
                       })
                     }
                   />
@@ -2581,15 +2620,11 @@ export function App() {
                       disabled={!state || working || running}
                       onSelect={(reasoningEffort) =>
                         protect(async () => {
-                          const result = await request<any>(
-                            "config/model/write",
-                            {
-                              sessionId: state!.session.id,
-                              modelAlias: runtime!.config.activeModel.alias,
-                              reasoningEffort,
-                            },
+                          await writeModelAndConfirm(
+                            state!.session.id,
+                            runtime!.config.activeModel.alias,
+                            reasoningEffort,
                           );
-                          setRuntime(result.runtime);
                         })
                       }
                     />
@@ -3276,16 +3311,15 @@ export function App() {
                   runtime?.config.activeModel || configView?.activeModel
                 }
                 disabled={working || running}
-                onSelect={(modelAlias, reasoningEffort) =>
-                  protect(async () => {
-                    if (state) {
-                      const result = await request<any>("config/model/write", {
-                        sessionId: state.session.id,
-                        modelAlias,
-                        ...(reasoningEffort ? { reasoningEffort } : {}),
-                      });
-                      setRuntime(result.runtime);
-                    } else {
+                  onSelect={(modelAlias, reasoningEffort) =>
+                    protect(async () => {
+                      if (state) {
+                        await writeModelAndConfirm(
+                          state.session.id,
+                          modelAlias,
+                          reasoningEffort,
+                        );
+                      } else {
                       setPendingModel({
                         alias: modelAlias,
                         reasoning: reasoningEffort,

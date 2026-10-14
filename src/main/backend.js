@@ -1017,8 +1017,10 @@ export class VibeBackend extends EventEmitter {
         const abs = /^[A-Za-z]:[\\/]/.test(trimmed) || trimmed.startsWith("\\\\") || trimmed.startsWith("/");
         if (!abs) throw new TypeError("customEditorPath must be absolute");
         const lower = trimmed.toLowerCase();
-        if (!lower.endsWith(".exe") && !lower.endsWith(".cmd") && !lower.endsWith(".bat"))
-          throw new TypeError("customEditorPath must be a Windows executable");
+        // Batch launchers are refused: they cannot start without cmd.exe's
+        // own parser (see EditorService). Only direct executables are stored.
+        if (!lower.endsWith(".exe"))
+          throw new TypeError("customEditorPath must be a direct .exe executable");
         next.customEditorPath = trimmed;
       } else {
         next.customEditorPath = null;
@@ -2105,7 +2107,9 @@ export class VibeBackend extends EventEmitter {
         if (typeof stored.customEditorPath === "string" && stored.customEditorPath) {
           const trimmed = stored.customEditorPath.trim();
           const lower = trimmed.toLowerCase();
-          if (trimmed.length <= 4096 && !trimmed.includes("\0") && (lower.endsWith(".exe") || lower.endsWith(".cmd") || lower.endsWith(".bat")))
+          // Legacy .cmd/.bat paths are dropped on load: they are no longer
+          // launchable since batch wrappers were disabled for safety.
+          if (trimmed.length <= 4096 && !trimmed.includes("\0") && lower.endsWith(".exe"))
             this.preferences.customEditorPath = trimmed;
         }
       } catch {
@@ -2625,8 +2629,10 @@ function parseConfigPointer(value) {
 }
 
 function validateConfigValue(parts, value) {
-  validateBoundedJson(value, "config value", 0);
   const [root] = parts;
+  validateBoundedJson(value, "config value", 0, {
+    mcpEnvScope: root === "mcp_servers",
+  });
   if (root === "providers") {
     if (parts.length === 1) {
       if (!Array.isArray(value) || value.length > 64)
@@ -2937,7 +2943,12 @@ function validateMcpAdd(params) {
   }
 }
 
-function validateBoundedJson(value, label, depth) {
+function validateBoundedJson(
+  value,
+  label,
+  depth,
+  { mcpEnvScope = false, secretsUnderEnv = false } = {},
+) {
   if (depth > MAX_CONFIG_DEPTH)
     throw new TypeError(`${label} is nested too deeply`);
   if (value === null || typeof value === "boolean") return;
@@ -2953,20 +2964,30 @@ function validateBoundedJson(value, label, depth) {
   if (Array.isArray(value)) {
     if (value.length > MAX_CONFIG_ITEMS)
       throw new TypeError(`${label} has too many array items`);
-    for (const item of value) validateBoundedJson(item, label, depth + 1);
+    for (const item of value)
+      validateBoundedJson(item, label, depth + 1, { mcpEnvScope, secretsUnderEnv });
     return;
   }
   requireObject(value, label);
   const keys = Object.keys(value);
   if (keys.length > 64) throw new TypeError(`${label} has too many fields`);
   for (const [key, child] of Object.entries(value)) {
+    // MCP server environment maps legitimately hold tokens (GITHUB_TOKEN and
+    // friends): all env values are treated as sensitive downstream (redacted,
+    // never displayed), but their keys must not trip the credential guard.
+    // Every other subtree keeps the strict rejection.
+    const underEnv = secretsUnderEnv || (mcpEnvScope && key === "env");
     if (
+      !underEnv &&
       /(?:secret|password|token|authorization|headers|api_key)(?!_env_var)/i.test(
         key,
       )
     )
       throw new TypeError(`${label} cannot contain credential fields`);
-    validateBoundedJson(child, label, depth + 1);
+    validateBoundedJson(child, label, depth + 1, {
+      mcpEnvScope,
+      secretsUnderEnv: underEnv,
+    });
   }
 }
 

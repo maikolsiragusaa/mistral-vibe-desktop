@@ -58,7 +58,7 @@ test("openTerminal prefers wt.exe with structured argv", async () => {
   assert.deepEqual(result.argv, ["-d", "C:\\repo"]);
 });
 
-test("open routes .cmd launchers via cmd /d /s /c without shell:true", async () => {
+test("open refuses .cmd/.bat launchers instead of routing them through cmd.exe", async () => {
   const calls = [];
   const svc = new EditorService({
     authorizeProjectRoot: async (p) => p,
@@ -70,13 +70,17 @@ test("open routes .cmd launchers via cmd /d /s /c without shell:true", async () 
     platform: "win32",
     env: { SystemRoot: "C:\\Windows" },
   });
-  const result = await svc.open({ editorExe: "C:\\Editors\\code.cmd", folder: "C:\\repo" });
-  assert.equal(result.exePath, "C:\\Editors\\code.cmd");
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].exe, "C:\\Windows\\System32\\cmd.exe");
-  assert.deepEqual(calls[0].argv.slice(0, 3), ["/d", "/s", "/c"]);
-  assert.equal(calls[0].opts.shell, false);
-  assert.ok(calls[0].argv[3].includes("code.cmd"));
+  // Batch wrappers cannot start without cmd.exe's own parser, which expands
+  // %VAR% inside arguments even with shell:false (see editor-launcher-real).
+  await assert.rejects(
+    svc.open({ editorExe: "C:\\Editors\\code.cmd", folder: "C:\\repo" }),
+    /direct \.exe/,
+  );
+  await assert.rejects(
+    svc.open({ editorExe: "C:\\Editors\\start.bat", folder: "C:\\repo" }),
+    /direct \.exe/,
+  );
+  assert.equal(calls.length, 0);
 });
 
 test("open surfaces spawn failures instead of false confirmations", async () => {

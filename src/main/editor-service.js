@@ -91,16 +91,15 @@ function validateExePath(exePath) {
   if (!isAbsolutePath(exePath)) throw new TypeError("Editor executable must be absolute");
   if (/[;&|`$"]/.test(exePath)) throw new TypeError("Editor executable path is invalid");
   if (/[\r\n]/.test(exePath)) throw new TypeError("Editor executable path is invalid");
-  const lower = exePath.toLowerCase();
-  if (!lower.endsWith(".exe") && !lower.endsWith(".cmd") && !lower.endsWith(".bat"))
-    throw new TypeError("Editor executable must be a Windows executable");
+  // Batch launchers are refused outright: Windows cannot start a .cmd/.bat
+  // without cmd.exe's own parser, which expands %VAR% inside arguments even
+  // when the parent spawns with shell:false (verified by real-process test).
+  // A limited-but-safe .exe-only policy beats an apparently complete one.
+  if (!exePath.toLowerCase().endsWith(".exe"))
+    throw new TypeError(
+      "Custom editors must be direct .exe executables; batch launchers are not supported",
+    );
   return exePath;
-}
-
-function quoteCmdArg(value) {
-  if (typeof value !== "string" || !value || value.includes('"') || /[\r\n\0]/.test(value))
-    throw new TypeError("Editor argument is invalid");
-  return `"${value}"`;
 }
 
 export class EditorService {
@@ -219,10 +218,11 @@ export class EditorService {
     return path.join(systemRoot, "System32", "cmd.exe");
   }
 
-  #spawnGuarded(exe, argv, options) {
-    // Synchronous spawn failures (missing exe, bad cwd) must never report
-    // success. Async process errors after a successful spawn belong to the
-    // launched app, not to this handoff confirmation.
+  async #spawnGuarded(exe, argv, options) {
+    // A returned object is not a launch: wait for the OS 'spawn' event and
+    // treat an async 'error' as a failed launch. Without the error listener
+    // a late ENOENT would surface as an uncaught exception and crash the app.
+    // The confirmation means "process created", never "window visible".
     let child;
     try {
       child = this.spawnImpl(exe, argv, {
@@ -240,6 +240,59 @@ export class EditorService {
     } catch {
       // unref failures never fail the handoff itself.
     }
+    if (!child || typeof child.once !== "function") return child;
+    const started = await new Promise((resolve) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        resolve(true);
+      }, 1500);
+      timer.unref?.();
+      const cleanup = () => {
+        clearTimeout(timer);
+        try {
+          child.off?.("error", onError);
+        } catch {}
+        try {
+          child.off?.("spawn", onSpawn);
+        } catch {}
+      };
+      const onSpawn = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(true);
+      };
+      const onError = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(false);
+      };
+      try {
+        child.once("spawn", onSpawn);
+        child.once("error", onError);
+      } catch {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          resolve(true);
+        }
+      }
+      // A process that already exited (or failed) before listeners attached
+      // reports through exitCode/signalCode instead of hanging the handoff.
+      try {
+        if (child.exitCode !== null && child.exitCode !== undefined) {
+          if (!settled) {
+            settled = true;
+            cleanup();
+            resolve(true);
+          }
+        }
+      } catch {}
+    });
+    if (!started) throw new Error("The editor or terminal could not be launched");
     return child;
   }
 
@@ -258,21 +311,14 @@ export class EditorService {
     }
     const authorizedFolder = await this.#resolveAuthorizedFolder(folder);
     const argv = this.#buildArgv(authorizedFolder, file, line);
-    // Structured spawn, shell:false, no interpolation. The editor runs as its
-    // own app; nothing is auto-launched in the background.
-    // Windows cannot spawn .cmd/.bat directly with shell:false, so batch
-    // launchers are routed through cmd.exe /d /s /c with each argument
-    // individually quoted. No shell:true, no string interpolation.
-    const lower = exe.toLowerCase();
-    if (lower.endsWith(".cmd") || lower.endsWith(".bat")) {
-      const cmd = this.#systemCmd();
-      if (!(await this.#existsFile(cmd))) throw new Error("Windows command processor is unavailable");
-      const quoted = [exe, ...argv].map(quoteCmdArg).join(" ");
-      this.#spawnGuarded(cmd, ["/d", "/s", "/c", quoted], {});
-      return { exePath: exe, argv, launcher: cmd };
-    }
-    this.#spawnGuarded(exe, argv, {});
-    return { exePath: exe, argv };
+    // Structured spawn, shell:false, no interpolation, .exe only. The editor
+    // runs as its own app; nothing is auto-launched in the background.
+    const child = await this.#spawnGuarded(exe, argv, {});
+    return {
+      exePath: exe,
+      argv,
+      pid: typeof child?.pid === "number" ? child.pid : null,
+    };
   }
 
   async openTerminal({ folder } = {}) {
@@ -284,14 +330,23 @@ export class EditorService {
     if (this.platform !== "win32") throw new Error("Terminal handoff is Windows-only here");
     const wt = await this.#resolveInPath(["wt.exe"]);
     if (wt) {
-      this.#spawnGuarded(wt, ["-d", authorizedFolder], {});
-      return { exePath: wt, argv: ["-d", authorizedFolder] };
+      const wtChild = await this.#spawnGuarded(wt, ["-d", authorizedFolder], {});
+      return {
+        exePath: wt,
+        argv: ["-d", authorizedFolder],
+        pid: typeof wtChild?.pid === "number" ? wtChild.pid : null,
+      };
     }
     const cmd = this.#systemCmd();
     if (!(await this.#existsFile(cmd))) throw new Error("Windows terminal is unavailable");
     // /d disables AutoRun hijack; cwd places the shell in the workspace
     // without passing the path through cmd's command parser.
-    this.#spawnGuarded(cmd, ["/d"], { cwd: authorizedFolder, windowsHide: false });
-    return { exePath: cmd, argv: ["/d"], cwd: authorizedFolder };
+    const child = await this.#spawnGuarded(cmd, ["/d"], { cwd: authorizedFolder, windowsHide: false });
+    return {
+      exePath: cmd,
+      argv: ["/d"],
+      cwd: authorizedFolder,
+      pid: typeof child?.pid === "number" ? child.pid : null,
+    };
   }
 }
